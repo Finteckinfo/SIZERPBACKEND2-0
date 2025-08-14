@@ -1,4 +1,3 @@
-// src/index.ts
 import express from "express";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
@@ -18,8 +17,8 @@ app.use(logger);
 // Security middleware (helmet + csrf) - apply only to app routes
 app.use("/app", securityMiddleware);
 
-// Webhook route (no CSRF here)
-app.use("/api/webhook", webhookRouter);
+// Webhook route (no CSRF here) — mounted directly at /clerk
+app.use("/clerk", webhookRouter);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

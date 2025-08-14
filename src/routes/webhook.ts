@@ -1,4 +1,3 @@
-// src/routes/webhook.ts
 import { Router, Request, Response } from "express";
 import { Webhook } from "svix";
 import dotenv from "dotenv";
@@ -17,7 +16,7 @@ if (!webhookSecret) {
 
 // Raw body middleware for Svix
 router.post(
-  "/clerk",
+  "/",
   bodyParser.raw({ type: "*/*" }),
   async (req: Request, res: Response) => {
     const payload = req.body.toString("utf8");
@@ -56,7 +55,7 @@ router.post(
           data: {
             id, // use Clerk's ID as the primary key
             email: email_addresses[0]?.email_address ?? "",
-            passwordHash: "", // will remain empty unless you also handle password logins
+            passwordHash: "", // empty for SSO users
           },
         });
 
