@@ -1,12 +1,14 @@
 // src/routes/webhook.ts
-import express, { Router, Request, Response } from "express";
+import { Router, Request, Response } from "express";
 import { Webhook } from "svix";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
+import { PrismaClient } from "@prisma/client";
 
 dotenv.config();
 
 const router = Router();
+const prisma = new PrismaClient();
 const webhookSecret = process.env.CLERK_WEBHOOK_SECRET;
 
 if (!webhookSecret) {
@@ -48,18 +50,27 @@ router.post(
 
     try {
       if (evt.type === "user.created") {
-        const { id, email_addresses, first_name, last_name } = evt.data;
-        console.log("[DB] Insert user:", {
-          id,
-          email: email_addresses[0]?.email_address,
-          name: `${first_name ?? ""} ${last_name ?? ""}`.trim(),
+        const { id, email_addresses } = evt.data;
+
+        await prisma.user.create({
+          data: {
+            id, // use Clerk's ID as the primary key
+            email: email_addresses[0]?.email_address ?? "",
+            passwordHash: "", // will remain empty unless you also handle password logins
+          },
         });
-        // TODO: Insert into DB here
+
+        console.log(`[DB] User ${id} inserted successfully`);
       }
 
       if (evt.type === "user.deleted") {
-        console.log("[DB] Delete user:", evt.data.id);
-        // TODO: Delete from DB here
+        const userId = evt.data.id;
+
+        await prisma.user.delete({
+          where: { id: userId },
+        });
+
+        console.log(`[DB] User ${userId} deleted successfully`);
       }
     } catch (dbError) {
       console.error("[Webhook] Database error:", dbError);
