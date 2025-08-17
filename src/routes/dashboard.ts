@@ -1,9 +1,11 @@
 // src/routes/dashboard.ts
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma, dbUtils } from '../utils/database.js';
 
 const router = Router();
-const prisma = new PrismaClient();
+
+// Use centralized cache from dbUtils
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * GET /api/dashboard/stats
@@ -17,20 +19,36 @@ router.get('/stats', async (req: Request, res: Response) => {
   }
 
   try {
-    // Get user's projects
+    // Check cache first
+    const cacheKey = `stats_${userId}`;
+    const cached = dbUtils.getCached(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    // Single optimized query to get all required data
     const userProjects = await prisma.userRole.findMany({
       where: { userId: userId as string },
-      include: {
+      select: {
+        role: true,
         project: {
-          include: {
+          select: {
+            id: true,
+            name: true,
             departments: {
-              include: {
-                tasks: true,
+              select: {
+                id: true,
+                tasks: {
+                  select: {
+                    id: true,
+                    status: true,
+                  },
+                },
               },
             },
             userRoles: {
-              include: {
-                user: true,
+              select: {
+                userId: true,
               },
             },
           },
@@ -38,42 +56,46 @@ router.get('/stats', async (req: Request, res: Response) => {
       },
     });
 
-    const projectIds = userProjects.map(ur => ur.project.id);
+    // Calculate statistics efficiently
+    let totalProjects = userProjects.length;
+    let activeProjects = 0;
+    let totalTasks = 0;
+    let completedTasks = 0;
+    const uniqueTeamMembers = new Set();
 
-    // Calculate statistics
-    const totalProjects = userProjects.length;
-    const activeProjects = userProjects.filter(ur => 
-      ur.project.departments.some(dept => 
-        dept.tasks.some(task => task.status !== 'COMPLETED')
-      )
-    ).length;
+    userProjects.forEach(ur => {
+      const project = ur.project;
+      const projectTasks = project.departments.flatMap(dept => dept.tasks);
+      const projectCompletedTasks = projectTasks.filter(task => task.status === 'COMPLETED').length;
+      
+      totalTasks += projectTasks.length;
+      completedTasks += projectCompletedTasks;
+      
+      // Project is active if it has incomplete tasks
+      if (projectTasks.length > projectCompletedTasks) {
+        activeProjects++;
+      }
 
-    const totalTasks = userProjects.reduce((sum, ur) => 
-      sum + ur.project.departments.reduce((deptSum, dept) => 
-        deptSum + dept.tasks.length, 0
-      ), 0
-    );
+      // Collect unique team members
+      project.userRoles.forEach(ur2 => uniqueTeamMembers.add(ur2.userId));
+    });
 
-    const completedTasks = userProjects.reduce((sum, ur) => 
-      sum + ur.project.departments.reduce((deptSum, dept) => 
-        deptSum + dept.tasks.filter(task => task.status === 'COMPLETED').length, 0
-      ), 0
-    );
-
-    const totalTeamMembers = new Set(
-      userProjects.flatMap(ur => ur.project.userRoles.map(ur2 => ur2.user.id))
-    ).size;
-
+    const totalTeamMembers = uniqueTeamMembers.size;
     const completionPercentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-    return res.json({
+    const stats = {
       totalProjects,
       activeProjects,
       totalTasks,
       completedTasks,
       totalTeamMembers,
       completionPercentage,
-    });
+    };
+
+    // Cache the result
+    dbUtils.setCached(cacheKey, stats, CACHE_TTL);
+
+    return res.json(stats);
   } catch (err) {
     console.error('[Dashboard Stats API] Error:', err);
     return res.status(500).json({ error: 'Failed to fetch dashboard stats' });
@@ -102,48 +124,58 @@ router.get('/weekly-progress', async (req: Request, res: Response) => {
     endOfWeek.setDate(startOfWeek.getDate() + 6); // Sunday
     endOfWeek.setHours(23, 59, 59, 999);
 
-    // Get user's projects
-    const userProjects = await prisma.userRole.findMany({
+    // Get user's project IDs first
+    const userProjectIds = await prisma.userRole.findMany({
       where: { userId: userId as string },
-      include: {
-        project: {
-          include: {
-            departments: {
-              include: {
-                tasks: true,
+      select: { projectId: true },
+    });
+
+    const projectIds = userProjectIds.map(ur => ur.projectId);
+
+    if (projectIds.length === 0) {
+      return res.json({
+        tasksCompletedThisWeek: 0,
+        activeProjects: 0,
+        weekStart: startOfWeek,
+        weekEnd: endOfWeek,
+      });
+    }
+
+    // Parallel queries for better performance
+    const [tasksCompletedThisWeek, activeProjectsCount] = await Promise.all([
+      // Get tasks completed this week
+      prisma.task.count({
+        where: {
+          department: {
+            projectId: { in: projectIds },
+          },
+          status: 'COMPLETED',
+          updatedAt: {
+            gte: startOfWeek,
+            lte: endOfWeek,
+          },
+        },
+      }),
+      // Get active projects count
+      prisma.project.count({
+        where: {
+          id: { in: projectIds },
+          departments: {
+            some: {
+              tasks: {
+                some: {
+                  status: { not: 'COMPLETED' },
+                },
               },
             },
           },
         },
-      },
-    });
-
-    const projectIds = userProjects.map(ur => ur.project.id);
-
-    // Get tasks completed this week
-    const tasksCompletedThisWeek = await prisma.task.count({
-      where: {
-        department: {
-          projectId: { in: projectIds },
-        },
-        status: 'COMPLETED',
-        updatedAt: {
-          gte: startOfWeek,
-          lte: endOfWeek,
-        },
-      },
-    });
-
-    // Get active projects (projects with incomplete tasks)
-    const activeProjects = userProjects.filter(ur => 
-      ur.project.departments.some(dept => 
-        dept.tasks.some(task => task.status !== 'COMPLETED')
-      )
-    ).length;
+      }),
+    ]);
 
     return res.json({
       tasksCompletedThisWeek,
-      activeProjects,
+      activeProjects: activeProjectsCount,
       weekStart: startOfWeek,
       weekEnd: endOfWeek,
     });

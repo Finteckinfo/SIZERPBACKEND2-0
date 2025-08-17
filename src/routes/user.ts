@@ -1,50 +1,86 @@
 // src/routes/user.ts
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma, dbUtils } from '../utils/database.js';
 
 const router = Router();
-const prisma = new PrismaClient();
+
+// Use centralized cache from dbUtils
+const PROJECTS_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
 /**
  * GET /api/user/projects
  * Get all projects the current user is involved in
  */
 router.get('/projects', async (req: Request, res: Response) => {
-  const { userId } = req.query;
+  const { userId, page = 1, limit = 20 } = req.query;
+  const pageNum = parseInt(page as string) || 1;
+  const limitNum = Math.min(parseInt(limit as string) || 20, 50); // Max 50 projects per page
+  const offset = (pageNum - 1) * limitNum;
 
   if (!userId) {
     return res.status(400).json({ error: 'Missing userId parameter' });
   }
 
   try {
-    const userProjects = await prisma.userRole.findMany({
-      where: { userId: userId as string },
-      include: {
-        project: {
-          include: {
-            departments: {
-              include: {
-                tasks: true,
+    // Check cache for first page
+    const cacheKey = `projects_${userId}_${pageNum}_${limitNum}`;
+    if (pageNum === 1) {
+      const cached = dbUtils.getCached(cacheKey);
+      if (cached) {
+        return res.json(cached);
+      }
+    }
+
+    // Optimized query with pagination
+    const [userProjects, totalCount] = await Promise.all([
+      prisma.userRole.findMany({
+        where: { userId: userId as string },
+        select: {
+          role: true,
+          project: {
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              type: true,
+              createdAt: true,
+              departments: {
+                select: {
+                  id: true,
+                  tasks: {
+                    select: {
+                      id: true,
+                      status: true,
+                    },
+                  },
+                },
               },
-            },
-            userRoles: {
-              include: {
-                user: true,
+              userRoles: {
+                select: {
+                  userId: true,
+                },
               },
             },
           },
         },
-      },
-    });
+        skip: offset,
+        take: limitNum,
+        orderBy: {
+          project: {
+            createdAt: 'desc',
+          },
+        },
+      }),
+      prisma.userRole.count({
+        where: { userId: userId as string },
+      }),
+    ]);
 
     const projects = userProjects.map(ur => {
       const project = ur.project;
-      const totalTasks = project.departments.reduce((sum, dept) => 
-        sum + dept.tasks.length, 0
-      );
-      const completedTasks = project.departments.reduce((sum, dept) => 
-        sum + dept.tasks.filter(task => task.status === 'COMPLETED').length, 0
-      );
+      const projectTasks = project.departments.flatMap(dept => dept.tasks);
+      const completedTasks = projectTasks.filter(task => task.status === 'COMPLETED').length;
+      const totalTasks = projectTasks.length;
       const completionPercentage = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
       return {
@@ -62,7 +98,24 @@ router.get('/projects', async (req: Request, res: Response) => {
       };
     });
 
-    return res.json(projects);
+    const result = {
+      projects,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limitNum),
+        hasNext: pageNum * limitNum < totalCount,
+        hasPrev: pageNum > 1,
+      },
+    };
+
+    // Cache first page results
+    if (pageNum === 1) {
+      dbUtils.setCached(cacheKey, result, PROJECTS_CACHE_TTL);
+    }
+
+    return res.json(result);
   } catch (err) {
     console.error('[User Projects API] Error:', err);
     return res.status(500).json({ error: 'Failed to fetch user projects' });
@@ -71,70 +124,132 @@ router.get('/projects', async (req: Request, res: Response) => {
 
 /**
  * GET /api/user/activities
- * Get recent activities (limited implementation due to no activity log table)
- * Note: This is a simplified version since there's no dedicated activity tracking
+ * Get recent activities with optimized queries
  */
 router.get('/activities', async (req: Request, res: Response) => {
-  const { userId, limit = 10 } = req.query;
+  const { userId, limit = 10, page = 1 } = req.query;
+  const limitNum = Math.min(parseInt(limit as string) || 10, 50);
+  const pageNum = parseInt(page as string) || 1;
+  const offset = (pageNum - 1) * limitNum;
 
   if (!userId) {
     return res.status(400).json({ error: 'Missing userId parameter' });
   }
 
   try {
-    // Get user's projects
-    const userProjects = await prisma.userRole.findMany({
+    // Get user's project IDs first
+    const userProjectIds = await prisma.userRole.findMany({
       where: { userId: userId as string },
-      include: {
-        project: true,
-      },
+      select: { projectId: true },
     });
 
-    const projectIds = userProjects.map(ur => ur.project.id);
+    const projectIds = userProjectIds.map(ur => ur.projectId);
 
-    // Get recent tasks, payments, and project updates
-    const recentTasks = await prisma.task.findMany({
-      where: {
-        department: {
-          projectId: { in: projectIds },
+    if (projectIds.length === 0) {
+      return res.json({
+        activities: [],
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total: 0,
+          totalPages: 0,
+          hasNext: false,
+          hasPrev: false,
         },
-      },
-      include: {
-        department: {
-          include: {
-            project: true,
-          },
-        },
-        assignedTo: true,
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: Math.floor(Number(limit) / 2),
-    });
+      });
+    }
 
-    const recentPayments = await prisma.payment.findMany({
-      where: {
-        task: {
+    // Parallel queries for better performance
+    const [recentTasks, recentPayments, totalActivities] = await Promise.all([
+      // Get recent tasks
+      prisma.task.findMany({
+        where: {
           department: {
             projectId: { in: projectIds },
           },
         },
-      },
-      include: {
-        task: {
-          include: {
-            department: {
-              include: {
-                project: true,
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          updatedAt: true,
+          department: {
+            select: {
+              project: {
+                select: {
+                  name: true,
+                },
               },
             },
           },
+          assignedTo: {
+            select: {
+              email: true,
+            },
+          },
         },
-        payer: true,
-        payee: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: Math.floor(Number(limit) / 2),
-    });
+        orderBy: { updatedAt: 'desc' },
+        take: Math.floor(limitNum / 2),
+        skip: Math.floor(offset / 2),
+      }),
+      // Get recent payments
+      prisma.payment.findMany({
+        where: {
+          task: {
+            department: {
+              projectId: { in: projectIds },
+            },
+          },
+        },
+        select: {
+          id: true,
+          amount: true,
+          status: true,
+          createdAt: true,
+          releasedAt: true,
+          task: {
+            select: {
+              department: {
+                select: {
+                  project: {
+                    select: {
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          payee: {
+            select: {
+              email: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: Math.floor(limitNum / 2),
+        skip: Math.floor(offset / 2),
+      }),
+      // Get total count for pagination
+      prisma.$transaction([
+        prisma.task.count({
+          where: {
+            department: {
+              projectId: { in: projectIds },
+            },
+          },
+        }),
+        prisma.payment.count({
+          where: {
+            task: {
+              department: {
+                projectId: { in: projectIds },
+              },
+            },
+          },
+        }),
+      ]),
+    ]);
 
     // Combine and format activities
     const activities = [
@@ -155,9 +270,21 @@ router.get('/activities', async (req: Request, res: Response) => {
         timestamp: payment.releasedAt || payment.createdAt,
       })),
     ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-     .slice(0, Number(limit));
+     .slice(0, limitNum);
 
-    return res.json(activities);
+    const totalCount = totalActivities[0] + totalActivities[1];
+
+    return res.json({
+      activities,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limitNum),
+        hasNext: pageNum * limitNum < totalCount,
+        hasPrev: pageNum > 1,
+      },
+    });
   } catch (err) {
     console.error('[User Activities API] Error:', err);
     return res.status(500).json({ error: 'Failed to fetch user activities' });
@@ -166,45 +293,66 @@ router.get('/activities', async (req: Request, res: Response) => {
 
 /**
  * GET /api/user/deadlines
- * Note: This API cannot be fully implemented as tasks don't have due dates in the current schema
- * This is a placeholder that returns tasks that might need attention
+ * Get urgent tasks with optimized queries
  */
 router.get('/deadlines', async (req: Request, res: Response) => {
-  const { userId } = req.query;
+  const { userId, limit = 10, priority } = req.query;
+  const limitNum = Math.min(parseInt(limit as string) || 10, 50);
 
   if (!userId) {
     return res.status(400).json({ error: 'Missing userId parameter' });
   }
 
   try {
-    // Get user's projects
-    const userProjects = await prisma.userRole.findMany({
+    // Get user's project IDs first
+    const userProjectIds = await prisma.userRole.findMany({
       where: { userId: userId as string },
-      include: {
-        project: true,
-      },
+      select: { projectId: true },
     });
 
-    const projectIds = userProjects.map(ur => ur.project.id);
+    const projectIds = userProjectIds.map(ur => ur.projectId);
 
-    // Get tasks that are pending or in progress (as a proxy for "deadlines")
+    if (projectIds.length === 0) {
+      return res.json([]);
+    }
+
+    // Build status filter based on priority
+    let statusFilter: any = { in: ['PENDING', 'IN_PROGRESS'] };
+    if (priority === 'urgent') {
+      statusFilter = { equals: 'PENDING' };
+    } else if (priority === 'due_soon') {
+      statusFilter = { equals: 'IN_PROGRESS' };
+    }
+
+    // Optimized query with proper indexing
     const urgentTasks = await prisma.task.findMany({
       where: {
         department: {
           projectId: { in: projectIds },
         },
-        status: { in: ['PENDING', 'IN_PROGRESS'] },
+        status: statusFilter,
       },
       include: {
         department: {
           include: {
-            project: true,
+            project: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
-        assignedTo: true,
+        assignedTo: {
+          select: {
+            email: true,
+          },
+        },
       },
-      orderBy: { createdAt: 'asc' },
-      take: 10,
+      orderBy: [
+        { status: 'asc' }, // PENDING first
+        { createdAt: 'asc' }, // Oldest first
+      ],
+      take: limitNum,
     });
 
     const deadlines = urgentTasks.map(task => ({
