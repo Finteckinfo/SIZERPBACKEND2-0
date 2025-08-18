@@ -123,7 +123,7 @@ router.post('/', async (req: Request, res: Response) => {
     const existingTemplate = await prisma.department.findFirst({
       where: {
         name,
-        projectId: null // Only check templates
+        projectId: { equals: null } // Only check templates
       }
     });
 
@@ -138,7 +138,8 @@ router.post('/', async (req: Request, res: Response) => {
         description,
         order: order || 0,
         isVisible: isVisible !== undefined ? isVisible : true,
-        managerId
+        managerId,
+        projectId: null // Explicitly set as template
       },
       include: {
         manager: {
@@ -184,7 +185,7 @@ router.get('/templates', async (req: Request, res: Response) => {
 
     // Build where clause - only templates
     const where: any = {
-      projectId: null // Only templates
+      projectId: { equals: null } // Only templates
     };
 
     if (search) {
@@ -355,7 +356,7 @@ router.patch('/:departmentId', async (req: Request, res: Response) => {
     const existingDepartment = await prisma.department.findFirst({
       where: {
         id: departmentId,
-        projectId: null // Only templates can be updated globally
+        projectId: { equals: null } // Only templates can be updated globally
       }
     });
 
@@ -368,7 +369,7 @@ router.patch('/:departmentId', async (req: Request, res: Response) => {
       const nameConflict = await prisma.department.findFirst({
         where: {
           name,
-          projectId: null,
+          projectId: { equals: null },
           id: { not: departmentId }
         }
       });
@@ -423,7 +424,7 @@ router.delete('/:departmentId', async (req: Request, res: Response) => {
     const existingDepartment = await prisma.department.findFirst({
       where: {
         id: departmentId,
-        projectId: null // Only templates can be deleted globally
+        projectId: { equals: null } // Only templates can be deleted globally
       }
     });
 

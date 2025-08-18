@@ -151,13 +151,15 @@ model Department {
   description    String?
   order          Int           @default(0)
   isVisible      Boolean       @default(true)
-  project        Project       @relation(fields: [projectId], references: [id])
-  projectId      String
+  project        Project?      @relation(fields: [projectId], references: [id])
+  projectId      String?
   manager        User?         @relation("ManagedDepartments", fields: [managerId], references: [id])
   managerId      String?
   tasks          Task[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+  
+  @@unique([name, projectId]) // Allow same name for different projects, but unique per project
 }
 
 model Task {
@@ -165,8 +167,8 @@ model Task {
   title           String
   description     String?
   status          TaskStatus     @default(PENDING)
-  department      Department     @relation(fields: [departmentId], references: [id])
-  departmentId    String
+  department      Department?    @relation(fields: [departmentId], references: [id])
+  departmentId    String?
   assignedTo      User?          @relation("EmployeeTasks", fields: [employeeId], references: [id])
   employeeId      String?
   payments        Payment[]

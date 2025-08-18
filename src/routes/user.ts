@@ -253,22 +253,26 @@ router.get('/activities', async (req: Request, res: Response) => {
 
     // Combine and format activities
     const activities = [
-      ...recentTasks.map(task => ({
-        id: task.id,
-        type: 'task_updated',
-        description: `Task "${task.title}" status changed to ${task.status}`,
-        projectName: task.department.project.name,
-        userName: task.assignedTo?.email || 'Unassigned',
-        timestamp: task.updatedAt,
-      })),
-      ...recentPayments.map(payment => ({
-        id: payment.id,
-        type: 'payment_released',
-        description: `Payment of $${payment.amount} released for task`,
-        projectName: payment.task.department.project.name,
-        userName: payment.payee.email,
-        timestamp: payment.releasedAt || payment.createdAt,
-      })),
+      ...recentTasks
+        .filter(task => task.department && task.department.project)
+        .map(task => ({
+          id: task.id,
+          type: 'task_updated',
+          description: `Task "${task.title}" status changed to ${task.status}`,
+          projectName: task.department!.project!.name,
+          userName: task.assignedTo?.email || 'Unassigned',
+          timestamp: task.updatedAt,
+        })),
+      ...recentPayments
+        .filter(payment => payment.task.department && payment.task.department.project)
+        .map(payment => ({
+          id: payment.id,
+          type: 'payment_released',
+          description: `Payment of $${payment.amount} released for task`,
+          projectName: payment.task.department!.project!.name,
+          userName: payment.payee.email,
+          timestamp: payment.releasedAt || payment.createdAt,
+        })),
     ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
      .slice(0, limitNum);
 
@@ -355,15 +359,17 @@ router.get('/deadlines', async (req: Request, res: Response) => {
       take: limitNum,
     });
 
-    const deadlines = urgentTasks.map(task => ({
-      id: task.id,
-      title: task.title,
-      projectName: task.department.project.name,
-      status: task.status,
-      priority: task.status === 'PENDING' ? 'urgent' : 'due_soon',
-      assignedTo: task.assignedTo?.email || 'Unassigned',
-      createdAt: task.createdAt,
-    }));
+    const deadlines = urgentTasks
+      .filter(task => task.department && task.department.project)
+      .map(task => ({
+        id: task.id,
+        title: task.title,
+        projectName: task.department!.project!.name,
+        status: task.status,
+        priority: task.status === 'PENDING' ? 'urgent' : 'due_soon',
+        assignedTo: task.assignedTo?.email || 'Unassigned',
+        createdAt: task.createdAt,
+      }));
 
     return res.json(deadlines);
   } catch (err) {

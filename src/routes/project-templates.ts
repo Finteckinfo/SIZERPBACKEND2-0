@@ -287,7 +287,7 @@ router.post('/:templateId/duplicate', async (req: Request, res: Response) => {
       data: {
         name: newName,
         description: description || existingTemplate.description,
-        structure: existingTemplate.structure,
+        structure: existingTemplate.structure as any,
         isActive: false // Start as inactive for review
       }
     });
