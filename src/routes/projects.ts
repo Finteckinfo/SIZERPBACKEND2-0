@@ -155,9 +155,23 @@ router.post('/', async (req: Request, res: Response) => {
     walletAddress,
     userId,
     idempotencyKey,
+    // Optional advanced fields
+    roleDepartmentOrder, // Record<userId or email, string[]> of department IDs in desired order
+    roleDepartmentScope, // Record<userId or email, string[]> of department IDs scoped
+    departmentVisibility, // Array<{ name, type, description?, order, isVisible? }>
   } = req.body;
 
   try {
+    // Verify wallet ownership
+    if (walletAddress && userId) {
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { walletAddress: true },
+      });
+      if (!user?.walletAddress || user.walletAddress !== walletAddress) {
+        return res.status(400).json({ error: 'Wallet address does not match requester' });
+      }
+    }
     // Check idempotency
     if (idempotencyKey) {
       const existingProject = await prisma.project.findFirst({
@@ -203,16 +217,20 @@ router.post('/', async (req: Request, res: Response) => {
         );
       }
 
-      // Create departments
+      // Create departments (support isVisible)
       const createdDepartments = [];
-      if (departments && Array.isArray(departments)) {
-        for (const dept of departments) {
+      const departmentsInput = Array.isArray(departmentVisibility) && departmentVisibility.length > 0
+        ? departmentVisibility
+        : departments;
+      if (departmentsInput && Array.isArray(departmentsInput)) {
+        for (const dept of departmentsInput) {
           const department = await tx.department.create({
             data: {
               name: dept.name,
               type: dept.type,
               description: dept.description,
               order: dept.order || 0,
+              isVisible: typeof dept.isVisible === 'boolean' ? dept.isVisible : true,
               projectId: project.id,
               managerId: dept.managerId,
             },
@@ -221,16 +239,39 @@ router.post('/', async (req: Request, res: Response) => {
         }
       }
 
-      // Create user roles
+      // Ensure at least one PROJECT_OWNER (fallback to creator)
+      const hasOwner = Array.isArray(roles) && roles.some((r: any) => r.role === 'PROJECT_OWNER');
+      const rolesWithFallback = [...(roles || [])];
+      if (!hasOwner && userId) {
+        rolesWithFallback.push({ userId, role: 'PROJECT_OWNER' });
+      }
+
+      // Create user roles with departmentOrder/departmentScope validation
       const createdRoles = [];
-      if (roles && Array.isArray(roles)) {
-        for (const roleData of roles) {
+      if (rolesWithFallback && Array.isArray(rolesWithFallback)) {
+        const deptIdSet = new Set((createdDepartments as any[]).map(d => d.id));
+        for (const roleData of rolesWithFallback) {
           if (roleData.userId) {
+            // resolve scoping/ordering by userId or email key
+            const key = roleData.userId || roleData.userEmail;
+            const orderFromBody: string[] | undefined = roleDepartmentOrder?.[key];
+            const scopeFromBody: string[] | undefined = roleDepartmentScope?.[key];
+
+            // Validate department ids provided exist in created departments
+            const validOrder = Array.isArray(orderFromBody)
+              ? orderFromBody.filter((id: string) => deptIdSet.has(id))
+              : [];
+            const validScope = Array.isArray(scopeFromBody)
+              ? scopeFromBody.filter((id: string) => deptIdSet.has(id))
+              : [];
+
             const userRole = await tx.userRole.create({
               data: {
                 userId: roleData.userId,
                 projectId: project.id,
                 role: roleData.role,
+                departmentOrder: validOrder,
+                departmentScope: validScope,
               },
             });
             createdRoles.push(userRole);

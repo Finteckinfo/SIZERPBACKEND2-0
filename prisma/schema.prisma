@@ -84,6 +84,10 @@ model UserRole {
   project   Project  @relation(fields: [projectId], references: [id])
   projectId String
   role      Role
+  // Scoping to departments; stores ordered list of department IDs user cares about
+  departmentOrder String[] @default([])
+  // Visibility/scope subset of departments for this role
+  departmentScope String[] @default([])
   createdAt DateTime @default(now())
 }
 
@@ -146,6 +150,7 @@ model Department {
   type           DepartmentType
   description    String?
   order          Int           @default(0)
+  isVisible      Boolean       @default(true)
   project        Project       @relation(fields: [projectId], references: [id])
   projectId      String
   manager        User?         @relation("ManagedDepartments", fields: [managerId], references: [id])
