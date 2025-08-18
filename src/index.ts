@@ -15,6 +15,14 @@ import webhookRouter from "./routes/webhook.js";
 import walletRouter from "./routes/wallet.js";
 import dashboardRouter from "./routes/dashboard.js";
 import userRouter from "./routes/user.js";
+import authRouter from "./routes/auth.js";
+import configRouter from "./routes/config.js";
+import usersRouter from "./routes/users.js";
+import projectsRouter from "./routes/projects.js";
+import projectDraftsRouter from "./routes/project-drafts.js";
+import projectTemplatesRouter from "./routes/project-templates.js";
+import departmentsRouter from "./routes/departments.js";
+import rolesRouter from "./routes/roles.js";
 
 dotenv.config();
 const app = express();
@@ -38,8 +46,28 @@ app.use("/app", securityMiddleware);
 // Webhooks (no CSRF)
 app.use("/clerk", webhookRouter);
 
+// Auth & Identity routes
+app.use("/api", authRouter);
+
+// Configuration routes
+app.use("/api/config", configRouter);
+
+// User management routes
+app.use("/api/users", usersRouter);
+
 // Wallet routes
 app.use("/api/user/wallet", walletRouter);
+
+// Project management routes
+app.use("/api/projects", projectsRouter);
+app.use("/api/project-drafts", projectDraftsRouter);
+app.use("/api/project-templates", projectTemplatesRouter);
+
+// Department management routes (nested under projects)
+app.use("/api/projects", departmentsRouter);
+
+// Role and invite management routes (nested under projects)
+app.use("/api/projects", rolesRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);

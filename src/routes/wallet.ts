@@ -1,9 +1,39 @@
 // src/routes/wallet.ts
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../utils/database.js';
 
 const router = Router();
-const prisma = new PrismaClient();
+
+/**
+ * GET /api/users/:userId/wallet/connected
+ * Check if user's wallet is connected
+ */
+router.get('/:userId/connected', async (req: Request, res: Response) => {
+  const { userId } = req.params;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId parameter' });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { walletAddress: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ 
+      connected: !!user.walletAddress,
+      walletAddress: user.walletAddress || null,
+    });
+  } catch (error) {
+    console.error('[Wallet API] Error:', error);
+    res.status(500).json({ error: 'Failed to check wallet connection' });
+  }
+});
 
 /**
  * POST /api/user/wallet
@@ -35,7 +65,11 @@ router.post('/', async (req: Request, res: Response) => {
       data: { walletAddress },
     });
 
-    return res.json({ success: true, wallet: updatedUser.walletAddress });
+    return res.json({ 
+      success: true, 
+      userId: updatedUser.id,
+      walletAddress: updatedUser.walletAddress,
+    });
   } catch (err) {
     console.error('[Wallet API] Error:', err);
     return res.status(500).json({ error: 'Failed to update wallet' });
