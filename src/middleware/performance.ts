@@ -38,7 +38,7 @@ export const responseOptimizer = (req: Request, res: Response, next: NextFunctio
 
 // Compression middleware configuration
 export const compressionMiddleware = compression({
-  filter: (req, res) => {
+  filter: (req: any, res: any) => {
     // Don't compress responses with this request header
     if (req.headers['x-no-compression']) {
       return false;
@@ -79,7 +79,7 @@ const requestCounts = new Map<string, { count: number; resetTime: number }>();
 
 export const rateLimiter = (maxRequests: number = 100, windowMs: number = 60000) => {
   return (req: Request, res: Response, next: NextFunction) => {
-    const userId = req.query.userId as string || req.ip;
+    const userId = (req.query.userId as string) || req.ip || 'unknown';
     const now = Date.now();
     
     const userRequests = requestCounts.get(userId);
