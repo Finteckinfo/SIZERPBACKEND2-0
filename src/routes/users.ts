@@ -99,6 +99,126 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/users/search?query=...
+ * Alias for user search using `query` param
+ */
+router.get('/search', async (req: Request, res: Response) => {
+  const {
+    page = 1,
+    limit = 20,
+    query,
+    hasWallet,
+    sortBy = 'createdAt',
+    sortOrder = 'desc'
+  } = req.query as any;
+
+  try {
+    const pageNum = parseInt(page as string) || 1;
+    const limitNum = Math.min(parseInt(limit as string) || 20, 100);
+    const offset = (pageNum - 1) * limitNum;
+
+    const where: any = {};
+
+    if (query) {
+      where.OR = [
+        { firstName: { contains: query as string, mode: 'insensitive' } },
+        { lastName: { contains: query as string, mode: 'insensitive' } },
+        { email: { contains: query as string, mode: 'insensitive' } }
+      ];
+    }
+
+    if (hasWallet === 'true') {
+      where.walletAddress = { not: null };
+    } else if (hasWallet === 'false') {
+      where.walletAddress = null;
+    }
+
+    const orderBy: any = {};
+    orderBy[sortBy as string] = sortOrder;
+
+    const [users, totalCount] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          avatarUrl: true,
+          walletAddress: true,
+          createdAt: true,
+          updatedAt: true,
+          _count: {
+            select: {
+              roles: true,
+              projectsOwned: true
+            }
+          }
+        },
+        skip: offset,
+        take: limitNum,
+        orderBy
+      }),
+      prisma.user.count({ where })
+    ]);
+
+    const usersWithStats = users.map(user => ({
+      ...user,
+      fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email,
+      hasWallet: !!user.walletAddress,
+      projectCount: user._count.projectsOwned,
+      roleCount: user._count.roles
+    }));
+
+    res.json({
+      users: usersWithStats,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limitNum),
+        hasNext: pageNum * limitNum < totalCount,
+        hasPrev: pageNum > 1
+      }
+    });
+  } catch (error) {
+    console.error('[Users API] Error:', error);
+    res.status(500).json({ error: 'Failed to search users' });
+  }
+});
+
+/**
+ * POST /api/users/resolve-by-emails
+ * Resolve user IDs by email addresses
+ */
+router.post('/resolve-by-emails', async (req: Request, res: Response) => {
+  const { emails } = req.body as { emails: string[] };
+
+  if (!Array.isArray(emails) || emails.length === 0) {
+    return res.status(400).json({ error: 'emails must be a non-empty array' });
+  }
+
+  try {
+    const users = await prisma.user.findMany({
+      where: { email: { in: emails } },
+      select: { id: true, email: true }
+    });
+
+    const emailToUserId: Record<string, string> = {};
+    for (const user of users) {
+      emailToUserId[user.email] = user.id;
+    }
+
+    const notFound = emails.filter(e => !emailToUserId[e]);
+
+    res.json({ emailToUserId, notFound });
+  } catch (error) {
+    console.error('[Users API] Error:', error);
+    res.status(500).json({ error: 'Failed to resolve users by emails' });
+  }
+});
+
+/**
  * GET /api/users/:userId
  * Get user details
  */
@@ -147,19 +267,8 @@ router.get('/:userId', async (req: Request, res: Response) => {
             createdAt: true
           }
         },
-        managedDepts: {
-          select: {
-            id: true,
-            name: true,
-            type: true,
-            project: {
-              select: {
-                id: true,
-                name: true
-              }
-            }
-          }
-        },
+        // Note: managedDepts no longer exists in the new schema
+        // Departments are now managed through UserRoles
         tasksAssigned: {
           select: {
             id: true,
@@ -184,7 +293,6 @@ router.get('/:userId', async (req: Request, res: Response) => {
           select: {
             roles: true,
             projectsOwned: true,
-            managedDepts: true,
             tasksAssigned: true
           }
         }
@@ -203,7 +311,6 @@ router.get('/:userId', async (req: Request, res: Response) => {
       stats: {
         totalProjects: user._count.projectsOwned,
         totalRoles: user._count.roles,
-        managedDepartments: user._count.managedDepts,
         assignedTasks: user._count.tasksAssigned
       }
     };

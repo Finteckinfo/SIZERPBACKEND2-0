@@ -59,56 +59,61 @@ enum InviteStatus {
 //
 
 model User {
-  id             String       @id @default(cuid())
-  email          String       @unique
-  firstName      String?
-  lastName       String?
-  avatarUrl      String?
-  passwordHash   String?
-  walletAddress  String?
-  roles          UserRole[]
-  projectsOwned  Project[]    @relation("OwnedProjects")
-  managedDepts   Department[] @relation("ManagedDepartments")
-  tasksAssigned  Task[]       @relation("EmployeeTasks")
-  paymentsMade   Payment[]    @relation("PaymentsMade")
-  paymentsRecv   Payment[]    @relation("PaymentsReceived")
-  invites        ProjectInvite[]
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id            String          @id @default(cuid())
+  email         String          @unique
+  firstName     String?
+  lastName      String?
+  avatarUrl     String?
+  passwordHash  String?
+  walletAddress String?
+  roles         UserRole[]
+  projectsOwned Project[]       @relation("OwnedProjects")
+  // Remove the old managedDepts relation since departments now link to UserRoles
+  tasksAssigned Task[]          @relation("EmployeeTasks")
+  paymentsMade  Payment[]       @relation("PaymentsMade")
+  paymentsRecv  Payment[]       @relation("PaymentsReceived")
+  invites       ProjectInvite[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
 }
 
 model UserRole {
-  id        String   @id @default(cuid())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  project   Project  @relation(fields: [projectId], references: [id])
-  projectId String
-  role      Role
+  id                    String       @id @default(cuid())
+  user                  User         @relation(fields: [userId], references: [id])
+  userId                String
+  project               Project      @relation(fields: [projectId], references: [id])
+  projectId             String
+  role                  Role
   // Scoping to departments; stores ordered list of department IDs user cares about
-  departmentOrder String[] @default([])
+  departmentOrder       String[]     @default([])
   // Visibility/scope subset of departments for this role
-  departmentScope String[] @default([])
-  createdAt DateTime @default(now())
+  departmentScope       String[]     @default([])
+  // New: Link to departments this role manages
+  managedDepartments    Department[] @relation("DepartmentManagers")
+  // New: Link to departments this role has access to
+  accessibleDepartments Department[] @relation("DepartmentAccess")
+  // New: Link to tasks assigned to this role
+  assignedTasks         Task[]       @relation("RoleTaskAssignments")
+  createdAt             DateTime     @default(now())
 }
 
 model Project {
-  id             String       @id @default(cuid())
-  name           String       @unique
-  description    String?
-  type           ProjectType
-  priority       Priority     @default(MEDIUM)
-  budgetRange    String?
-  startDate      DateTime
-  endDate        DateTime
-  owner          User         @relation("OwnedProjects", fields: [ownerId], references: [id])
-  ownerId        String
-  userRoles      UserRole[]
-  departments    Department[]
-  tags           ProjectTag[]
-  invites        ProjectInvite[]
-  drafts         ProjectDraft[]
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id          String          @id @default(cuid())
+  name        String          @unique
+  description String?
+  type        ProjectType
+  priority    Priority        @default(MEDIUM)
+  budgetRange String?
+  startDate   DateTime
+  endDate     DateTime
+  owner       User            @relation("OwnedProjects", fields: [ownerId], references: [id])
+  ownerId     String
+  userRoles   UserRole[]
+  departments Department[]
+  tags        ProjectTag[]
+  invites     ProjectInvite[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 }
 
 model ProjectTag {
@@ -117,18 +122,11 @@ model ProjectTag {
   project   Project  @relation(fields: [projectId], references: [id])
   projectId String
   createdAt DateTime @default(now())
-  
+
   @@unique([name, projectId])
 }
 
-model ProjectDraft {
-  id        String   @id @default(cuid())
-  project   Project  @relation(fields: [projectId], references: [id])
-  projectId String
-  data      Json     // Stores the draft data as JSON
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
+// Drafting removed
 
 model ProjectInvite {
   id        String       @id @default(cuid())
@@ -145,60 +143,58 @@ model ProjectInvite {
 }
 
 model Department {
-  id             String        @id @default(cuid())
-  name           String
-  type           DepartmentType
-  description    String?
-  order          Int           @default(0)
-  isVisible      Boolean       @default(true)
-  project        Project?      @relation(fields: [projectId], references: [id])
-  projectId      String?
-  manager        User?         @relation("ManagedDepartments", fields: [managerId], references: [id])
-  managerId      String?
-  tasks          Task[]
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  
+  id              String         @id @default(cuid())
+  name            String
+  type            DepartmentType
+  description     String?
+  order           Int            @default(0)
+  isVisible       Boolean        @default(true)
+  project         Project        @relation(fields: [projectId], references: [id])
+  projectId       String
+  // New: Link to UserRoles that manage this department
+  managers        UserRole[]     @relation("DepartmentManagers")
+  // New: Link to UserRoles that have access to this department
+  accessibleRoles UserRole[]     @relation("DepartmentAccess")
+  tasks           Task[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
   @@unique([name, projectId]) // Allow same name for different projects, but unique per project
 }
 
 model Task {
-  id              String         @id @default(cuid())
-  title           String
-  description     String?
-  status          TaskStatus     @default(PENDING)
-  department      Department?    @relation(fields: [departmentId], references: [id])
-  departmentId    String?
-  assignedTo      User?          @relation("EmployeeTasks", fields: [employeeId], references: [id])
-  employeeId      String?
-  payments        Payment[]
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  id             String     @id @default(cuid())
+  title          String
+  description    String?
+  status         TaskStatus @default(PENDING)
+  department     Department @relation(fields: [departmentId], references: [id])
+  departmentId   String
+  // New: Link to UserRole instead of directly to User
+  assignedRole   UserRole?  @relation("RoleTaskAssignments", fields: [assignedRoleId], references: [id])
+  assignedRoleId String?
+  // Keep the old relation for backward compatibility, but mark as deprecated
+  assignedTo     User?      @relation("EmployeeTasks", fields: [employeeId], references: [id])
+  employeeId     String?
+  payments       Payment[]
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 }
 
 model Payment {
-  id            String        @id @default(cuid())
-  amount        Float
-  status        PaymentStatus @default(PENDING)
-  task          Task          @relation(fields: [taskId], references: [id])
-  taskId        String
-  payer         User          @relation("PaymentsMade", fields: [payerId], references: [id])
-  payerId       String
-  payee         User          @relation("PaymentsReceived", fields: [payeeId], references: [id])
-  payeeId       String
-  createdAt     DateTime      @default(now())
-  releasedAt    DateTime?
+  id         String        @id @default(cuid())
+  amount     Float
+  status     PaymentStatus @default(PENDING)
+  task       Task          @relation(fields: [taskId], references: [id])
+  taskId     String
+  payer      User          @relation("PaymentsMade", fields: [payerId], references: [id])
+  payerId    String
+  payee      User          @relation("PaymentsReceived", fields: [payeeId], references: [id])
+  payeeId    String
+  createdAt  DateTime      @default(now())
+  releasedAt DateTime?
 }
 
-model ProjectTemplate {
-  id          String   @id @default(cuid())
-  name        String
-  description String?
-  structure   Json     // Stores template structure as JSON
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
+// Project templates removed
 
 model Config {
   id    String @id @default(cuid())

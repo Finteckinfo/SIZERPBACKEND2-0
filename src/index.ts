@@ -19,8 +19,6 @@ import authRouter from "./routes/auth.js";
 import configRouter from "./routes/config.js";
 import usersRouter from "./routes/users.js";
 import projectsRouter from "./routes/projects.js";
-import projectDraftsRouter from "./routes/project-drafts.js";
-import projectTemplatesRouter from "./routes/project-templates.js";
 import departmentsRouter from "./routes/departments.js";
 import rolesRouter from "./routes/roles.js";
 
@@ -60,8 +58,6 @@ app.use("/api/user/wallet", walletRouter);
 
 // Project management routes
 app.use("/api/projects", projectsRouter);
-app.use("/api/project-drafts", projectDraftsRouter);
-app.use("/api/project-templates", projectTemplatesRouter);
 
 // Department management routes (nested under projects)
 app.use("/api/projects", departmentsRouter);

@@ -206,13 +206,18 @@ router.get('/:projectId', async (req: Request, res: Response) => {
             isVisible: true,
             createdAt: true,
             updatedAt: true,
-            manager: {
+            managers: {
               select: {
                 id: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-                avatarUrl: true
+                user: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    email: true,
+                    avatarUrl: true
+                  }
+                }
               }
             },
             tasks: {
@@ -223,13 +228,18 @@ router.get('/:projectId', async (req: Request, res: Response) => {
                 status: true,
                 createdAt: true,
                 updatedAt: true,
-                assignedTo: {
+                assignedRole: {
                   select: {
                     id: true,
-                    firstName: true,
-                    lastName: true,
-                    email: true,
-                    avatarUrl: true
+                    user: {
+                      select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                        avatarUrl: true
+                      }
+                    }
                   }
                 }
               }
@@ -409,8 +419,7 @@ router.post('/', async (req: Request, res: Response) => {
               description: dept.description,
               order: dept.order || 0,
               isVisible: typeof dept.isVisible === 'boolean' ? dept.isVisible : true,
-              projectId: project.id,
-              managerId: dept.managerId
+              projectId: project.id
             }
           });
           createdDepartments.push(department);
@@ -633,9 +642,7 @@ router.delete('/:projectId', async (req: Request, res: Response) => {
         where: { projectId }
       });
 
-      await tx.projectDraft.deleteMany({
-        where: { projectId }
-      });
+      // Drafts removed from system; nothing to delete here anymore
 
       await tx.project.delete({
         where: { id: projectId }
@@ -668,13 +675,18 @@ router.get('/:projectId/departments', async (req: Request, res: Response) => {
         isVisible: true,
         createdAt: true,
         updatedAt: true,
-        manager: {
+        managers: {
           select: {
             id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                avatarUrl: true
+              }
+            }
           }
         },
         tasks: {
@@ -714,7 +726,7 @@ router.get('/:projectId/departments', async (req: Request, res: Response) => {
  */
 router.post('/:projectId/departments', async (req: Request, res: Response) => {
   const { projectId } = req.params;
-  const { name, type, description, order, isVisible, managerId } = req.body;
+  const { name, type, description, order, isVisible } = req.body;
 
   try {
     // Check if project exists
@@ -744,17 +756,21 @@ router.post('/:projectId/departments', async (req: Request, res: Response) => {
         description,
         order: departmentOrder,
         isVisible: isVisible !== undefined ? isVisible : true,
-        projectId,
-        managerId
+        projectId
       },
       include: {
-        manager: {
+        managers: {
           select: {
             id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                avatarUrl: true
+              }
+            }
           }
         }
       }
@@ -773,7 +789,7 @@ router.post('/:projectId/departments', async (req: Request, res: Response) => {
  */
 router.patch('/:projectId/departments/:departmentId', async (req: Request, res: Response) => {
   const { projectId, departmentId } = req.params;
-  const { name, type, description, order, isVisible, managerId } = req.body;
+  const { name, type, description, order, isVisible } = req.body;
 
   try {
     const department = await prisma.department.update({
@@ -786,17 +802,21 @@ router.patch('/:projectId/departments/:departmentId', async (req: Request, res: 
         ...(type && { type }),
         ...(description !== undefined && { description }),
         ...(order !== undefined && { order }),
-        ...(isVisible !== undefined && { isVisible }),
-        ...(managerId !== undefined && { managerId })
+        ...(isVisible !== undefined && { isVisible })
       },
       include: {
-        manager: {
+        managers: {
           select: {
             id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            avatarUrl: true
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                avatarUrl: true
+              }
+            }
           }
         }
       }
@@ -1392,100 +1412,7 @@ router.delete('/:projectId/tags/:tagId', async (req: Request, res: Response) => 
   }
 });
 
-/**
- * GET /api/projects/:projectId/drafts
- * Get project drafts
- */
-router.get('/:projectId/drafts', async (req: Request, res: Response) => {
-  const { projectId } = req.params;
-
-  try {
-    const drafts = await prisma.projectDraft.findMany({
-      where: { projectId },
-      select: {
-        id: true,
-        data: true,
-        createdAt: true,
-        updatedAt: true
-      },
-      orderBy: { updatedAt: 'desc' }
-    });
-
-    res.json(drafts);
-  } catch (error) {
-    console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to fetch project drafts' });
-  }
-});
-
-/**
- * POST /api/projects/:projectId/drafts
- * Save project draft
- */
-router.post('/:projectId/drafts', async (req: Request, res: Response) => {
-  const { projectId } = req.params;
-  const { data } = req.body;
-
-  try {
-    const draft = await prisma.projectDraft.create({
-      data: {
-        projectId,
-        data
-      }
-    });
-
-    res.status(201).json(draft);
-  } catch (error) {
-    console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to save draft' });
-  }
-});
-
-/**
- * PATCH /api/projects/:projectId/drafts/:draftId
- * Update project draft
- */
-router.patch('/:projectId/drafts/:draftId', async (req: Request, res: Response) => {
-  const { projectId, draftId } = req.params;
-  const { data } = req.body;
-
-  try {
-    const draft = await prisma.projectDraft.update({
-      where: {
-        id: draftId,
-        projectId
-      },
-      data: { data }
-    });
-
-    res.json(draft);
-  } catch (error) {
-    console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to update draft' });
-  }
-});
-
-/**
- * DELETE /api/projects/:projectId/drafts/:draftId
- * Delete project draft
- */
-router.delete('/:projectId/drafts/:draftId', async (req: Request, res: Response) => {
-  const { projectId, draftId } = req.params;
-
-  try {
-    await prisma.projectDraft.delete({
-      where: {
-        id: draftId,
-        projectId
-      }
-    });
-
-    res.json({ message: 'Draft deleted successfully' });
-  } catch (error) {
-    console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to delete draft' });
-  }
-});
+// Draft endpoints removed as drafting is no longer supported
 
 /**
  * GET /api/projects/:projectId/invites
@@ -1644,137 +1571,6 @@ router.patch('/:projectId/invites/:inviteId', async (req: Request, res: Response
   }
 });
 
-// Keep existing endpoints for backward compatibility
-/**
- * GET /api/projects/validate-name?name=...
- * Check if project name is available
- */
-router.get('/validate-name', async (req: Request, res: Response) => {
-  const { name } = req.query;
-
-  if (!name || typeof name !== 'string') {
-    return res.status(400).json({ error: 'Missing or invalid name parameter' });
-  }
-
-  try {
-    const existingProject = await prisma.project.findUnique({
-      where: { name },
-      select: { id: true }
-    });
-
-    res.json({ 
-      available: !existingProject,
-      name: name as string
-    });
-  } catch (error) {
-    console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to validate project name' });
-  }
-});
-
-/**
- * POST /api/projects/precheck
- * Preflight check for project creation
- */
-router.post('/precheck', async (req: Request, res: Response) => {
-  const { 
-    name, 
-    startDate, 
-    endDate, 
-    walletAddress, 
-    userId,
-    departments,
-    roles 
-  } = req.body;
-
-  try {
-    const errors: string[] = [];
-    const warnings: string[] = [];
-
-    // Check required fields
-    if (!name) errors.push('Project name is required');
-    if (!startDate) errors.push('Start date is required');
-    if (!endDate) errors.push('End date is required');
-    if (!walletAddress) errors.push('Wallet address is required');
-    if (!userId) errors.push('User ID is required');
-
-    // Check date validity
-    if (startDate && endDate) {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
-      
-      if (isNaN(start.getTime())) errors.push('Invalid start date');
-      if (isNaN(end.getTime())) errors.push('Invalid end date');
-      if (start >= end) errors.push('End date must be after start date');
-      
-      // Check if dates are in the future
-      const now = new Date();
-      if (start < now) warnings.push('Start date is in the past');
-    }
-
-    // Check wallet ownership
-    if (walletAddress && userId) {
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { walletAddress: true }
-      });
-      
-      if (!user?.walletAddress) {
-        errors.push('User wallet not connected');
-      } else if (user.walletAddress !== walletAddress) {
-        errors.push('Wallet address does not match user wallet');
-      }
-    }
-
-    // Check name availability
-    if (name) {
-      const existingProject = await prisma.project.findUnique({
-        where: { name },
-        select: { id: true }
-      });
-      
-      if (existingProject) {
-        errors.push('Project name already exists');
-      }
-    }
-
-    // Check department constraints
-    if (departments && Array.isArray(departments)) {
-      if (departments.length === 0) {
-        warnings.push('No departments specified');
-      }
-      
-      const majorDepts = departments.filter((dept: any) => dept.type === 'MAJOR');
-      if (majorDepts.length === 0) {
-        warnings.push('No major departments specified');
-      }
-    }
-
-    // Check role constraints
-    if (roles && Array.isArray(roles)) {
-      const owners = roles.filter((role: any) => role.role === 'PROJECT_OWNER');
-      if (owners.length === 0) {
-        errors.push('At least one PROJECT_OWNER role is required');
-      }
-    }
-
-    const isValid = errors.length === 0;
-    
-    res.json({
-      isValid,
-      errors,
-      warnings,
-      summary: {
-        hasErrors: errors.length > 0,
-        hasWarnings: warnings.length > 0,
-        errorCount: errors.length,
-        warningCount: warnings.length
-      }
-    });
-  } catch (error) {
-    console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to perform precheck' });
-  }
-});
+// Validation and precheck endpoints removed per simplified flow
 
 export default router;
