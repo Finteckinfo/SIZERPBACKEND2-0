@@ -28,11 +28,6 @@ export const responseOptimizer = (req: Request, res: Response, next: NextFunctio
   res.setHeader('X-Response-Time', '0ms');
   res.setHeader('X-Cache-Control', 'no-cache');
   
-  // Enable gzip compression for JSON responses
-  if (req.headers.accept?.includes('application/json')) {
-    res.setHeader('Content-Encoding', 'gzip');
-  }
-  
   next();
 };
 
