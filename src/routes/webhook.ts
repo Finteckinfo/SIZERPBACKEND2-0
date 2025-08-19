@@ -17,7 +17,7 @@ if (!webhookSecret) {
 // Raw body middleware for Svix
 router.post(
   "/",
-  bodyParser.raw({ type: "*/*" }),
+  bodyParser.raw({ type: "application/json" }),
   async (req: Request, res: Response) => {
     const payload = req.body.toString("utf8");
     const headers = req.headers;

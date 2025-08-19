@@ -25,6 +25,9 @@ import rolesRouter from "./routes/roles.js";
 dotenv.config();
 const app = express();
 
+// Webhooks (raw body required) must be mounted before JSON body parser
+app.use("/clerk", webhookRouter);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 app.use(logger);
@@ -41,8 +44,7 @@ app.use(corsMiddleware);
 // Security middleware only on app routes
 app.use("/app", securityMiddleware);
 
-// Webhooks (no CSRF)
-app.use("/clerk", webhookRouter);
+// Webhooks mounted earlier to preserve raw body
 
 // Auth & Identity routes
 app.use("/api", authRouter);
