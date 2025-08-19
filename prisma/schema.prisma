@@ -54,6 +54,12 @@ enum InviteStatus {
   EXPIRED
 }
 
+enum UserRoleStatus {
+  PENDING
+  ACTIVE
+  INACTIVE
+}
+
 //
 // Models
 //
@@ -84,6 +90,10 @@ model UserRole {
   project               Project      @relation(fields: [projectId], references: [id])
   projectId             String
   role                  Role
+  status                UserRoleStatus @default(PENDING)
+  acceptedAt            DateTime?
+  invite                ProjectInvite? @relation(fields: [inviteId], references: [id])
+  inviteId              String?
   // Scoping to departments; stores ordered list of department IDs user cares about
   departmentOrder       String[]     @default([])
   // Visibility/scope subset of departments for this role
@@ -95,6 +105,7 @@ model UserRole {
   // New: Link to tasks assigned to this role
   assignedTasks         Task[]       @relation("RoleTaskAssignments")
   createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 }
 
 model Project {
@@ -138,6 +149,7 @@ model ProjectInvite {
   user      User?        @relation(fields: [userId], references: [id])
   userId    String?
   expiresAt DateTime
+  userRoles UserRole[]
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 }
@@ -165,19 +177,20 @@ model Department {
 model Task {
   id             String     @id @default(cuid())
   title          String
-  description    String?
-  status         TaskStatus @default(PENDING)
-  department     Department @relation(fields: [departmentId], references: [id])
-  departmentId   String
+  description   String?
+  status        TaskStatus @default(PENDING)
+  priority      Priority   @default(MEDIUM)
+  department    Department @relation(fields: [departmentId], references: [id])
+  departmentId  String
   // New: Link to UserRole instead of directly to User
-  assignedRole   UserRole?  @relation("RoleTaskAssignments", fields: [assignedRoleId], references: [id])
+  assignedRole  UserRole?  @relation("RoleTaskAssignments", fields: [assignedRoleId], references: [id])
   assignedRoleId String?
   // Keep the old relation for backward compatibility, but mark as deprecated
-  assignedTo     User?      @relation("EmployeeTasks", fields: [employeeId], references: [id])
-  employeeId     String?
-  payments       Payment[]
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  assignedTo    User?      @relation("EmployeeTasks", fields: [employeeId], references: [id])
+  employeeId    String?
+  payments      Payment[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 }
 
 model Payment {

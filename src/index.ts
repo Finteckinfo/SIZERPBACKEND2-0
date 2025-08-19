@@ -21,6 +21,9 @@ import usersRouter from "./routes/users.js";
 import projectsRouter from "./routes/projects.js";
 import departmentsRouter from "./routes/departments.js";
 import rolesRouter from "./routes/roles.js";
+import invitesRouter from "./routes/invites.js";
+import userRolesRouter from "./routes/user-roles.js";
+import tasksRouter from "./routes/tasks.js";
 
 dotenv.config();
 const app = express();
@@ -66,6 +69,15 @@ app.use("/api/projects", departmentsRouter);
 
 // Role and invite management routes (nested under projects)
 app.use("/api/projects", rolesRouter);
+
+// Project invites routes
+app.use("/api/invites", invitesRouter);
+
+// User roles management routes
+app.use("/api/user-roles", userRolesRouter);
+
+// Task management routes
+app.use("/api/tasks", tasksRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);
