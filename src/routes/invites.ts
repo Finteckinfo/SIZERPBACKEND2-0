@@ -110,7 +110,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Insufficient permissions to invite users' });
     }
 
-    // Check if user already exists
+    // Check if user already exists (optional - invites can be sent to non-existent users)
     const existingUser = await prisma.user.findUnique({
       where: { email }
     });
@@ -133,7 +133,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
         email,
         role,
         projectId,
-        userId: existingUser?.id,
+        userId: existingUser?.id, // Will be null if user doesn't exist yet
         expiresAt: new Date(expiresAt)
       }
     });
@@ -162,8 +162,10 @@ router.put('/:id/respond', authenticateToken, async (req: Request, res: Response
 
     if (!requireAuth(req, res)) return;
 
-    if (invite.userId && invite.userId !== req.user!.id) {
-      return res.status(403).json({ error: 'You can only respond to your own invites' });
+    // Check if this invite is for the current user (by email) or if they're already linked
+    // This allows users to accept invites even if they didn't exist when the invite was sent
+    if (invite.email !== req.user!.email && invite.userId && invite.userId !== req.user!.id) {
+      return res.status(403).json({ error: 'You can only respond to invites sent to your email address' });
     }
 
     if (invite.status !== 'PENDING') {
