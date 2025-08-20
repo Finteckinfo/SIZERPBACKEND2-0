@@ -32,48 +32,44 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 		const token = authHeader.substring(7);
 
 		try {
-			// Attempt JWT verification using preferred key sources
-			const jwtKey = process.env.CLERK_JWT_KEY; // PEM public key for RS256
-			const jwksUrl = process.env.CLERK_JWKS_URL; // Optional JWKS endpoint
-			const issuer = process.env.CLERK_ISSUER_URL; // Optional issuer
+			// Attempt JWT verification using JWKS (preferred) or fallback methods
+			const jwksUrl = process.env.CLERK_JWKS_URL; // JWKS endpoint for automatic key rotation
+			const issuer = process.env.CLERK_ISSUER_URL; // Optional issuer validation
 
-			if (!jwtKey && !jwksUrl && !process.env.CLERK_SECRET_KEY) {
-				console.error('No verification material configured (CLERK_JWT_KEY, CLERK_JWKS_URL, or CLERK_SECRET_KEY)');
+			if (!jwksUrl && !process.env.CLERK_SECRET_KEY) {
+				console.error('No verification material configured (CLERK_JWKS_URL or CLERK_SECRET_KEY)');
 				return res.status(500).json({ error: 'Authentication configuration error' });
 			}
 
 			let decoded: any | null = null;
 			let lastError: unknown = null;
 
-			// 1) Try public key (fast path for RS256)
-			if (!decoded && jwtKey) {
-				try {
-					decoded = await verifyToken(token, { jwtKey });
-				} catch (e) {
-					lastError = e;
-				}
-			}
-
-			// 2) Try JWKS URL if provided
+			// 1) Try JWKS URL first (automatic key rotation, recommended for RS256)
 			if (!decoded && jwksUrl) {
 				try {
+					console.log('Attempting JWT verification with JWKS:', jwksUrl);
 					decoded = await verifyToken(token, { jwksUrl } as any);
+					console.log('JWKS verification successful');
 				} catch (e) {
 					lastError = e;
+					console.error('JWKS verification failed:', e);
 				}
 			}
 
-			// 3) Fallback: secret key (for HS256 templates)
+			// 2) Fallback: secret key (for HS256 templates)
 			if (!decoded && process.env.CLERK_SECRET_KEY) {
 				try {
+					console.log('Attempting JWT verification with secret key fallback');
 					decoded = await verifyToken(token, { jwtKey: process.env.CLERK_SECRET_KEY! });
+					console.log('Secret key verification successful');
 				} catch (e) {
 					lastError = e;
+					console.error('Secret key verification failed:', e);
 				}
 			}
 
 			if (!decoded) {
-				console.error('Token verification failed:', lastError);
+				console.error('All token verification methods failed. Last error:', lastError);
 				return res.status(401).json({ error: 'Invalid or expired token' });
 			}
 
