@@ -1,6 +1,7 @@
 // src/routes/projects.ts
 import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/database.js';
+import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -327,7 +328,7 @@ router.get('/:projectId', async (req: Request, res: Response) => {
  * POST /api/projects
  * Create a new project with all related data
  */
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', authenticateToken, async (req: Request, res: Response) => {
   const {
     name,
     description,
@@ -348,14 +349,20 @@ router.post('/', async (req: Request, res: Response) => {
   } = req.body;
 
   try {
-    // Verify wallet ownership
-    if (walletAddress && userId) {
+    // Use authenticated user from Clerk token
+    const authenticatedUserId = req.user?.id;
+    if (!authenticatedUserId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Verify wallet ownership if provided
+    if (walletAddress) {
       const user = await prisma.user.findUnique({
-        where: { id: userId },
+        where: { id: authenticatedUserId },
         select: { walletAddress: true }
       });
       if (!user?.walletAddress || user.walletAddress !== walletAddress) {
-        return res.status(400).json({ error: 'Wallet address does not match requester' });
+        return res.status(400).json({ error: 'Wallet address does not match authenticated user' });
       }
     }
 
@@ -386,7 +393,7 @@ router.post('/', async (req: Request, res: Response) => {
           budgetRange,
           startDate: new Date(startDate),
           endDate: new Date(endDate),
-          ownerId: userId
+          ownerId: authenticatedUserId // Use authenticated user ID
         }
       });
 
@@ -429,8 +436,13 @@ router.post('/', async (req: Request, res: Response) => {
       // Ensure at least one PROJECT_OWNER (fallback to creator)
       const hasOwner = Array.isArray(roles) && roles.some((r: any) => r.role === 'PROJECT_OWNER');
       const rolesWithFallback = [...(roles || [])];
-      if (!hasOwner && userId) {
-        rolesWithFallback.push({ userId, role: 'PROJECT_OWNER' });
+      if (!hasOwner) {
+        // Creator automatically becomes PROJECT_OWNER with ACTIVE status
+        rolesWithFallback.push({ 
+          userId: authenticatedUserId, 
+          role: 'PROJECT_OWNER',
+          isCreator: true // Flag to identify the creator
+        });
       }
 
       // Create user roles
@@ -456,6 +468,8 @@ router.post('/', async (req: Request, res: Response) => {
                 userId: roleData.userId,
                 projectId: project.id,
                 role: roleData.role,
+                status: roleData.isCreator ? 'ACTIVE' : 'PENDING', // Creator is ACTIVE, others are PENDING
+                acceptedAt: roleData.isCreator ? new Date() : null, // Creator accepted immediately
                 departmentOrder: validOrder,
                 departmentScope: validScope
               }
@@ -465,11 +479,12 @@ router.post('/', async (req: Request, res: Response) => {
         }
       }
 
-      // Create invites for users without IDs
+      // Create invites for users without IDs (exclude creator)
       const createdInvites = [];
       if (roles && Array.isArray(roles)) {
         for (const roleData of roles) {
-          if (roleData.userEmail && !roleData.userId) {
+          // Don't create invites for the creator or users with IDs
+          if (roleData.userEmail && !roleData.userId && roleData.userEmail !== req.user?.email) {
             const invite = await tx.projectInvite.create({
               data: {
                 email: roleData.userEmail,
