@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
-import jwt from 'jsonwebtoken';
+import { verifyToken } from '@clerk/backend';
 
 const prisma = new PrismaClient();
 
@@ -27,16 +27,34 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
       return res.status(401).json({ error: 'Access token required' });
     }
 
-    // Verify JWT token
-    const jwtSecret = process.env.JWT_SECRET || 'fallback-secret-change-in-production';
-    
     try {
-      const decoded = jwt.verify(token, jwtSecret) as { userId: string };
-      const userId = decoded.userId;
+      // Verify Clerk session token
+      const sessionToken = token;
+      const jwtSecret = process.env.CLERK_JWT_KEY || process.env.CLERK_SECRET_KEY;
+      
+      if (!jwtSecret) {
+        console.error('CLERK_JWT_KEY or CLERK_SECRET_KEY not configured');
+        return res.status(500).json({ error: 'Authentication configuration error' });
+      }
 
-      // Verify user exists
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
+      // Verify the token with Clerk
+      const decoded = await verifyToken(sessionToken, {
+        jwtKey: jwtSecret
+      });
+
+      // Extract user information from Clerk token
+      const userId = (decoded as any).sub; // Clerk user ID
+      const email = (decoded as any).email;
+      const firstName = (decoded as any).first_name || (decoded as any).given_name;
+      const lastName = (decoded as any).last_name || (decoded as any).family_name;
+
+      if (!userId || !email) {
+        return res.status(401).json({ error: 'Invalid token payload' });
+      }
+
+      // Check if user exists in our database, create if not
+      let user = await prisma.user.findUnique({
+        where: { email },
         select: {
           id: true,
           email: true,
@@ -45,8 +63,22 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
         }
       });
 
+      // If user doesn't exist, create them (first time login)
       if (!user) {
-        return res.status(401).json({ error: 'User not found' });
+        user = await prisma.user.create({
+          data: {
+            id: userId, // Use Clerk's user ID
+            email,
+            firstName: firstName || null,
+            lastName: lastName || null
+          },
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true
+          }
+        });
       }
 
       // Add user to request object
@@ -57,8 +89,8 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
         lastName: user.lastName || undefined
       };
       next();
-    } catch (jwtError) {
-      console.error('JWT verification failed:', jwtError);
+    } catch (clerkError) {
+      console.error('Clerk token verification failed:', clerkError);
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
   } catch (error) {

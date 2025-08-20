@@ -15,7 +15,7 @@ import webhookRouter from "./routes/webhook.js";
 import walletRouter from "./routes/wallet.js";
 import dashboardRouter from "./routes/dashboard.js";
 import userRouter from "./routes/user.js";
-import authRouter from "./routes/auth.js";
+
 import configRouter from "./routes/config.js";
 import usersRouter from "./routes/users.js";
 import projectsRouter from "./routes/projects.js";
@@ -49,8 +49,7 @@ app.use("/app", securityMiddleware);
 
 // Webhooks mounted earlier to preserve raw body
 
-// Auth & Identity routes
-app.use("/api", authRouter);
+
 
 // Configuration routes
 app.use("/api/config", configRouter);
