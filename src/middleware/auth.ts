@@ -32,18 +32,21 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
     
     try {
       // First, try to verify as JWT token
-      const jwtSecret = process.env.CLERK_SECRET_KEY;
+      const jwtKey = process.env.CLERK_JWT_KEY;
+      const secretKey = process.env.CLERK_SECRET_KEY;
       
-      if (!jwtSecret) {
-        console.error('CLERK_SECRET_KEY not configured');
+      if (!jwtKey && !secretKey) {
+        console.error('Neither CLERK_JWT_KEY nor CLERK_SECRET_KEY configured');
         return res.status(500).json({ error: 'Authentication configuration error' });
       }
 
-      console.log('Attempting JWT verification with secret:', jwtSecret.substring(0, 10) + '...');
+      console.log('Attempting JWT verification...');
+      console.log('JWT Key available:', !!jwtKey);
+      console.log('Secret Key available:', !!secretKey);
 
       // Verify the token with Clerk
       const decoded = await verifyToken(token, {
-        jwtKey: jwtSecret
+        jwtKey: jwtKey || secretKey
       });
 
       console.log('JWT verification successful, decoded:', JSON.stringify(decoded, null, 2));
