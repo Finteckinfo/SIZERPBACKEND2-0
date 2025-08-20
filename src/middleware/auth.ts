@@ -27,8 +27,11 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
     
+    // Log token for debugging (remove in production)
+    console.log('Received token:', token.substring(0, 20) + '...');
+    
     try {
-      // Verify the token with Clerk using JWT verification
+      // First, try to verify as JWT token
       const jwtSecret = process.env.CLERK_SECRET_KEY;
       
       if (!jwtSecret) {
@@ -36,10 +39,14 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
         return res.status(500).json({ error: 'Authentication configuration error' });
       }
 
+      console.log('Attempting JWT verification with secret:', jwtSecret.substring(0, 10) + '...');
+
       // Verify the token with Clerk
       const decoded = await verifyToken(token, {
         jwtKey: jwtSecret
       });
+
+      console.log('JWT verification successful, decoded:', JSON.stringify(decoded, null, 2));
 
       // Extract user information from decoded token
       const userId = (decoded as any).user_id || (decoded as any).sub;
@@ -48,6 +55,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
       const lastName = (decoded as any).last_name || (decoded as any).family_name;
 
       if (!userId || !email) {
+        console.error('Missing required fields in token:', { userId, email });
         return res.status(401).json({ error: 'Invalid token payload' });
       }
 
@@ -89,7 +97,12 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
       };
       next();
     } catch (clerkError) {
-      console.error('Clerk session verification failed:', clerkError);
+      console.error('Clerk token verification failed:', clerkError);
+      console.error('Error details:', {
+        message: (clerkError as any).message,
+        name: (clerkError as any).name,
+        stack: (clerkError as any).stack
+      });
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
   } catch (error) {
