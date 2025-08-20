@@ -5,21 +5,14 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = Router();
 const prisma = new PrismaClient();
 
-// Helper function to check authentication
-const requireAuth = (req: Request, res: Response): boolean => {
-  if (!req.user) {
-    res.status(401).json({ error: 'Authentication required' });
-    return false;
-  }
-  return true;
-};
+
 
 // GET /api/invites/user/:userId - Get user's pending invites
 router.get('/user/:userId', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
     
-    if (!requireAuth(req, res)) return;
+    // req.user is guaranteed to exist after authenticateToken middleware
 
     const invites = await prisma.projectInvite.findMany({
       where: {
@@ -51,8 +44,7 @@ router.get('/project/:projectId', authenticateToken, async (req: Request, res: R
   try {
     const { projectId } = req.params;
     
-    // Check if user has access to this project
-    if (!requireAuth(req, res)) return;
+    // req.user is guaranteed to exist after authenticateToken middleware
 
     const userRole = await prisma.userRole.findFirst({
       where: {
@@ -93,8 +85,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { email, role, projectId, expiresAt } = req.body;
 
-    // Check if user has permission to invite (must be project owner or manager)
-    if (!requireAuth(req, res)) return;
+    // req.user is guaranteed to exist after authenticateToken middleware
 
     const userRole = await prisma.userRole.findFirst({
       where: {
@@ -160,7 +151,7 @@ router.put('/:id/respond', authenticateToken, async (req: Request, res: Response
       return res.status(404).json({ error: 'Invite not found' });
     }
 
-    if (!requireAuth(req, res)) return;
+    // req.user is guaranteed to exist after authenticateToken middleware
 
     // Check if this invite is for the current user (by email) or if they're already linked
     // This allows users to accept invites even if they didn't exist when the invite was sent
@@ -229,8 +220,7 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Invite not found' });
     }
 
-    // Check if user has permission to update invite
-    if (!requireAuth(req, res)) return;
+    // req.user is guaranteed to exist after authenticateToken middleware
 
     const userRole = await prisma.userRole.findFirst({
       where: {
@@ -275,8 +265,7 @@ router.delete('/:id', authenticateToken, async (req: Request, res: Response) => 
       return res.status(404).json({ error: 'Invite not found' });
     }
 
-    // Check if user has permission to delete invite
-    if (!requireAuth(req, res)) return;
+    // req.user is guaranteed to exist after authenticateToken middleware
 
     const userRole = await prisma.userRole.findFirst({
       where: {
