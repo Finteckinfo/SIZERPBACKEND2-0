@@ -21,29 +21,28 @@ declare global {
 export const authenticateToken = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-    if (!token) {
-      return res.status(401).json({ error: 'Access token required' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token provided' });
     }
 
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    
     try {
-      // Verify Clerk session token
-      const sessionToken = token;
-      const jwtSecret = process.env.CLERK_JWT_KEY || process.env.CLERK_SECRET_KEY;
+      // Verify the token with Clerk using JWT verification
+      const jwtSecret = process.env.CLERK_SECRET_KEY;
       
       if (!jwtSecret) {
-        console.error('CLERK_JWT_KEY or CLERK_SECRET_KEY not configured');
+        console.error('CLERK_SECRET_KEY not configured');
         return res.status(500).json({ error: 'Authentication configuration error' });
       }
 
       // Verify the token with Clerk
-      const decoded = await verifyToken(sessionToken, {
+      const decoded = await verifyToken(token, {
         jwtKey: jwtSecret
       });
 
-      // Extract user information from Clerk token
-      const userId = (decoded as any).user_id; // Clerk user ID (not 'sub')
+      // Extract user information from decoded token
+      const userId = (decoded as any).user_id || (decoded as any).sub;
       const email = (decoded as any).email;
       const firstName = (decoded as any).first_name || (decoded as any).given_name;
       const lastName = (decoded as any).last_name || (decoded as any).family_name;
@@ -53,7 +52,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
       }
 
       // Check if user exists in our database, create if not
-      let user = await prisma.user.findUnique({
+      let dbUser = await prisma.user.findUnique({
         where: { email },
         select: {
           id: true,
@@ -64,8 +63,8 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
       });
 
       // If user doesn't exist, create them (first time login)
-      if (!user) {
-        user = await prisma.user.create({
+      if (!dbUser) {
+        dbUser = await prisma.user.create({
           data: {
             id: userId, // Use Clerk's user ID
             email,
@@ -83,14 +82,14 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 
       // Add user to request object
       req.user = {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName || undefined,
-        lastName: user.lastName || undefined
+        id: dbUser.id,
+        email: dbUser.email,
+        firstName: dbUser.firstName || undefined,
+        lastName: dbUser.lastName || undefined
       };
       next();
     } catch (clerkError) {
-      console.error('Clerk token verification failed:', clerkError);
+      console.error('Clerk session verification failed:', clerkError);
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
   } catch (error) {
