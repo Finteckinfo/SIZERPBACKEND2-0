@@ -50,12 +50,15 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
       });
 
       console.log('JWT verification successful, decoded:', JSON.stringify(decoded, null, 2));
+      console.log('Available fields in token:', Object.keys(decoded as any));
 
       // Extract user information from decoded token
-      const userId = (decoded as any).user_id || (decoded as any).sub;
-      const email = (decoded as any).email;
-      const firstName = (decoded as any).first_name || (decoded as any).given_name;
-      const lastName = (decoded as any).last_name || (decoded as any).family_name;
+      const userId = (decoded as any).user_id || (decoded as any).sub || (decoded as any).user || (decoded as any).id;
+      const email = (decoded as any).email || (decoded as any).email_address || (decoded as any).emailAddress;
+      const firstName = (decoded as any).first_name || (decoded as any).given_name || (decoded as any).firstName || (decoded as any).firstname;
+      const lastName = (decoded as any).last_name || (decoded as any).family_name || (decoded as any).lastName || (decoded as any).lastname;
+      
+      console.log('Extracted fields:', { userId, email, firstName, lastName });
 
       if (!userId || !email) {
         console.error('Missing required fields in token:', { userId, email });
