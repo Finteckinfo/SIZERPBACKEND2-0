@@ -161,6 +161,324 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/projects/my-projects
+ * Get projects that the authenticated user has access to
+ * (either as owner or as a team member)
+ * 
+ * Query Parameters:
+ * - page: Page number (default: 1)
+ * - limit: Items per page (default: 20, max: 100)
+ * - search: Search in name/description
+ * - type: Filter by project type (PROGRESSIVE/PARALLEL)
+ * - priority: Filter by priority (LOW/MEDIUM/HIGH/CRITICAL)
+ * - startDate: Filter projects starting after this date
+ * - endDate: Filter projects ending before this date
+ * - tags: Array of tag names to filter by
+ * - sortBy: Field to sort by (default: createdAt)
+ * - sortOrder: asc or desc (default: desc)
+ */
+router.get('/my-projects', authenticateToken, async (req: Request, res: Response) => {
+  const {
+    page = 1,
+    limit = 20,
+    search,
+    type,
+    priority,
+    status,
+    startDate,
+    endDate,
+    tags,
+    sortBy = 'createdAt',
+    sortOrder = 'desc'
+  } = req.query;
+
+  try {
+    const authenticatedUserId = req.user?.id;
+    const authenticatedUserEmail = req.user?.email;
+    
+    if (!authenticatedUserId || !authenticatedUserEmail) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const pageNum = parseInt(page as string) || 1;
+    const limitNum = Math.min(parseInt(limit as string) || 20, 100);
+    const offset = (pageNum - 1) * limitNum;
+
+    // Build where clause - only projects user has access to
+    const where: any = {
+      OR: [
+        // 1. User owns the project (check by email)
+        {
+          owner: {
+            email: authenticatedUserEmail
+          }
+        },
+        // 2. User has a UserRole in the project (check by email)
+        {
+          userRoles: {
+            some: {
+              user: {
+                email: authenticatedUserEmail
+              }
+            }
+          }
+        }
+      ]
+    };
+
+    if (search) {
+      where.AND = [{
+        OR: [
+          { name: { contains: search as string, mode: 'insensitive' } },
+          { description: { contains: search as string, mode: 'insensitive' } }
+        ]
+      }];
+    }
+
+    if (type) where.type = type;
+    if (priority) where.priority = priority;
+    if (startDate) where.startDate = { gte: new Date(startDate as string) };
+    if (endDate) where.endDate = { lte: new Date(endDate as string) };
+
+    if (tags && Array.isArray(tags)) {
+      where.tags = {
+        some: {
+          name: { in: tags as string[] }
+        }
+      };
+    }
+
+    // Build orderBy clause
+    const orderBy: any = {};
+    orderBy[sortBy as string] = sortOrder;
+
+    // Get projects with related data
+    const [projects, totalCount] = await Promise.all([
+      prisma.project.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          type: true,
+          priority: true,
+          budgetRange: true,
+          startDate: true,
+          endDate: true,
+          createdAt: true,
+          updatedAt: true,
+          owner: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+              avatarUrl: true
+            }
+          },
+          tags: {
+            select: {
+              id: true,
+              name: true
+            }
+          },
+          departments: {
+            select: {
+              id: true,
+              name: true,
+              type: true,
+              order: true
+            },
+            orderBy: { order: 'asc' }
+          },
+          userRoles: {
+            select: {
+              id: true,
+              role: true,
+              status: true,
+              user: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  email: true,
+                  avatarUrl: true
+                }
+              }
+            }
+          },
+          _count: {
+            select: {
+              departments: true,
+              userRoles: true
+            }
+          }
+        },
+        skip: offset,
+        take: limitNum,
+        orderBy
+      }),
+      prisma.project.count({ where })
+    ]);
+
+    // Calculate project statistics
+    const projectsWithStats = projects.map(project => {
+      const totalTasks = project.departments.reduce((sum, dept) => sum + (dept as any)._count?.tasks || 0, 0);
+      const completedTasks = project.departments.reduce((sum, dept) => sum + (dept as any)._count?.completedTasks || 0, 0);
+      
+      return {
+        ...project,
+        stats: {
+          totalDepartments: project._count.departments,
+          totalTeamMembers: project._count.userRoles,
+          totalTasks,
+          completedTasks,
+          completionPercentage: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0
+        }
+      };
+    });
+
+    res.json({
+      projects: projectsWithStats,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limitNum),
+        hasNext: pageNum * limitNum < totalCount,
+        hasPrev: pageNum > 1
+      }
+    });
+  } catch (error) {
+    console.error('[Projects API] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch user projects' });
+  }
+});
+
+/**
+ * GET /api/projects/my-projects/simple
+ * Get all projects that the authenticated user has access to
+ * (simplified version without pagination)
+ */
+router.get('/my-projects/simple', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const authenticatedUserEmail = req.user?.email;
+    
+    if (!authenticatedUserEmail) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Get projects user has access to
+    const projects = await prisma.project.findMany({
+      where: {
+        OR: [
+          // 1. User owns the project (check by email)
+          {
+            owner: {
+              email: authenticatedUserEmail
+            }
+          },
+          // 2. User has a UserRole in the project (check by email)
+          {
+            userRoles: {
+              some: {
+                user: {
+                  email: authenticatedUserEmail
+                }
+              }
+            }
+          }
+        ]
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        type: true,
+        priority: true,
+        budgetRange: true,
+        startDate: true,
+        endDate: true,
+        createdAt: true,
+        updatedAt: true,
+        owner: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            avatarUrl: true
+          }
+        },
+        tags: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
+        departments: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            order: true
+          },
+          orderBy: { order: 'asc' }
+        },
+        userRoles: {
+          select: {
+            id: true,
+            role: true,
+            status: true,
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                avatarUrl: true
+              }
+            }
+          }
+        },
+        _count: {
+          select: {
+            departments: true,
+            userRoles: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Calculate project statistics
+    const projectsWithStats = projects.map(project => {
+      const totalTasks = project.departments.reduce((sum, dept) => sum + (dept as any)._count?.tasks || 0, 0);
+      const completedTasks = project.departments.reduce((sum, dept) => sum + (dept as any)._count?.tasks || 0, 0);
+      
+      return {
+        ...project,
+        stats: {
+          totalDepartments: project._count.departments,
+          totalTeamMembers: project._count.userRoles,
+          totalTasks,
+          completedTasks,
+          completionPercentage: totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0
+        }
+      };
+    });
+
+    res.json({
+      projects: projectsWithStats,
+      total: projectsWithStats.length
+    });
+  } catch (error) {
+    console.error('[Projects API] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch user projects' });
+  }
+});
+
+/**
  * GET /api/projects/:projectId
  * Get single project details
  */
