@@ -43,7 +43,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
       });
 
       // Extract user information from Clerk token
-      const userId = (decoded as any).sub; // Clerk user ID
+      const userId = (decoded as any).user_id; // Clerk user ID (not 'sub')
       const email = (decoded as any).email;
       const firstName = (decoded as any).first_name || (decoded as any).given_name;
       const lastName = (decoded as any).last_name || (decoded as any).family_name;
