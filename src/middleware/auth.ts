@@ -1,178 +1,205 @@
 import { Request, Response, NextFunction } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
-import { verifyToken } from '@clerk/backend';
+import { verifyToken, createClerkClient } from '@clerk/backend';
 
 const prisma = new PrismaClient();
+const clerk = (createClerkClient as any)({
+	secretKey: process.env.CLERK_SECRET_KEY,
+	publishableKey: process.env.CLERK_PUBLISHABLE_KEY
+});
 
 // Extend the Express Request interface to include user
 declare global {
-  namespace Express {
-    interface Request {
-      user?: {
-        id: string;
-        email: string;
-        firstName?: string;
-        lastName?: string;
-      };
-    }
-  }
+	namespace Express {
+		interface Request {
+			user?: {
+				id: string;
+				email: string;
+				firstName?: string;
+				lastName?: string;
+			};
+		}
+	}
 }
 
 export const authenticateToken = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
+	try {
+		const authHeader = req.headers.authorization;
+		if (!authHeader || !authHeader.startsWith('Bearer ')) {
+			return res.status(401).json({ error: 'No token provided' });
+		}
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-    
-    // Log token for debugging (remove in production)
-    console.log('Received token:', token.substring(0, 20) + '...');
-    
-    try {
-      // First, try to verify as JWT token
-      const jwtKey = process.env.CLERK_JWT_KEY;
-      const secretKey = process.env.CLERK_SECRET_KEY;
-      
-      if (!jwtKey && !secretKey) {
-        console.error('Neither CLERK_JWT_KEY nor CLERK_SECRET_KEY configured');
-        return res.status(500).json({ error: 'Authentication configuration error' });
-      }
+		const token = authHeader.substring(7);
 
-      console.log('Attempting JWT verification...');
-      console.log('JWT Key available:', !!jwtKey);
-      console.log('Secret Key available:', !!secretKey);
+		try {
+			// Attempt JWT verification using preferred key sources
+			const jwtKey = process.env.CLERK_JWT_KEY; // PEM public key for RS256
+			const jwksUrl = process.env.CLERK_JWKS_URL; // Optional JWKS endpoint
+			const issuer = process.env.CLERK_ISSUER_URL; // Optional issuer
 
-      // Verify the token with Clerk
-      const decoded = await verifyToken(token, {
-        jwtKey: jwtKey || secretKey
-      });
+			if (!jwtKey && !jwksUrl && !process.env.CLERK_SECRET_KEY) {
+				console.error('No verification material configured (CLERK_JWT_KEY, CLERK_JWKS_URL, or CLERK_SECRET_KEY)');
+				return res.status(500).json({ error: 'Authentication configuration error' });
+			}
 
-      console.log('JWT verification successful, decoded:', JSON.stringify(decoded, null, 2));
-      console.log('Available fields in token:', Object.keys(decoded as any));
+			let decoded: any | null = null;
+			let lastError: unknown = null;
 
-      // Extract user information from decoded token
-      const userId = (decoded as any).user_id || (decoded as any).sub || (decoded as any).user || (decoded as any).id;
-      const email = (decoded as any).email || (decoded as any).email_address || (decoded as any).emailAddress;
-      const firstName = (decoded as any).first_name || (decoded as any).given_name || (decoded as any).firstName || (decoded as any).firstname;
-      const lastName = (decoded as any).last_name || (decoded as any).family_name || (decoded as any).lastName || (decoded as any).lastname;
-      
-      console.log('Extracted fields:', { userId, email, firstName, lastName });
+			// 1) Try public key (fast path for RS256)
+			if (!decoded && jwtKey) {
+				try {
+					decoded = await verifyToken(token, { jwtKey });
+				} catch (e) {
+					lastError = e;
+				}
+			}
 
-      if (!userId || !email) {
-        console.error('Missing required fields in token:', { userId, email });
-        return res.status(401).json({ error: 'Invalid token payload' });
-      }
+			// 2) Try JWKS URL if provided
+			if (!decoded && jwksUrl) {
+				try {
+					decoded = await verifyToken(token, { jwksUrl } as any);
+				} catch (e) {
+					lastError = e;
+				}
+			}
 
-      // Check if user exists in our database, create if not
-      let dbUser = await prisma.user.findUnique({
-        where: { email },
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true
-        }
-      });
+			// 3) Fallback: secret key (for HS256 templates)
+			if (!decoded && process.env.CLERK_SECRET_KEY) {
+				try {
+					decoded = await verifyToken(token, { jwtKey: process.env.CLERK_SECRET_KEY! });
+				} catch (e) {
+					lastError = e;
+				}
+			}
 
-      // If user doesn't exist, create them (first time login)
-      if (!dbUser) {
-        dbUser = await prisma.user.create({
-          data: {
-            id: userId, // Use Clerk's user ID
-            email,
-            firstName: firstName || null,
-            lastName: lastName || null
-          },
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true
-          }
-        });
-      }
+			if (!decoded) {
+				console.error('Token verification failed:', lastError);
+				return res.status(401).json({ error: 'Invalid or expired token' });
+			}
 
-      // Add user to request object
-      req.user = {
-        id: dbUser.id,
-        email: dbUser.email,
-        firstName: dbUser.firstName || undefined,
-        lastName: dbUser.lastName || undefined
-      };
-      next();
-    } catch (clerkError) {
-      console.error('Clerk token verification failed:', clerkError);
-      console.error('Error details:', {
-        message: (clerkError as any).message,
-        name: (clerkError as any).name,
-        stack: (clerkError as any).stack
-      });
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-  } catch (error) {
-    console.error('Auth middleware error:', error);
-    return res.status(500).json({ error: 'Authentication failed' });
-  }
+			// Extract fields with robust fallbacks
+			const userId: string | undefined =
+				decoded.user_id || decoded.sub || decoded.user || decoded.id;
+			let email: string | undefined =
+				decoded.email || decoded.email_address || decoded.emailAddress;
+			let firstName: string | undefined =
+				decoded.first_name || decoded.given_name || decoded.firstName || decoded.firstname;
+			let lastName: string | undefined =
+				decoded.last_name || decoded.family_name || decoded.lastName || decoded.lastname;
+
+			if (!userId) {
+				console.error('Token payload missing user id fields');
+				return res.status(401).json({ error: 'Invalid token payload' });
+			}
+
+			// If email is missing in JWT, fetch from Clerk as a fallback
+			if (!email && clerk) {
+				try {
+					const clerkUser = await (clerk.users.getUser as any)(userId);
+					email = clerkUser?.emailAddresses?.[0]?.emailAddress;
+					if (!firstName) firstName = clerkUser?.firstName ?? undefined;
+					if (!lastName) lastName = clerkUser?.lastName ?? undefined;
+				} catch (e) {
+					console.warn('Failed to fetch user from Clerk for email fallback');
+				}
+			}
+
+			if (!email) {
+				return res.status(401).json({ error: 'Invalid token payload' });
+			}
+
+			// Ensure user exists in our DB
+			let dbUser = await prisma.user.findUnique({
+				where: { email },
+				select: { id: true, email: true, firstName: true, lastName: true }
+			});
+
+			if (!dbUser) {
+				// Create user on first login
+				dbUser = await prisma.user.create({
+					data: {
+						id: userId,
+						email,
+						firstName: firstName || null,
+						lastName: lastName || null
+					},
+					select: { id: true, email: true, firstName: true, lastName: true }
+				});
+			}
+
+			req.user = {
+				id: dbUser.id,
+				email: dbUser.email,
+				firstName: dbUser.firstName || undefined,
+				lastName: dbUser.lastName || undefined
+			};
+			return next();
+		} catch (err) {
+			console.error('Auth middleware error:', err);
+			return res.status(401).json({ error: 'Invalid or expired token' });
+		}
+	} catch (error) {
+		console.error('Auth middleware fatal error:', error);
+		return res.status(500).json({ error: 'Authentication failed' });
+	}
 };
 
 // Optional: Middleware to check if user has specific role in a project
 export const requireProjectRole = (allowedRoles: Role[]) => {
-  return async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { projectId } = req.params;
-      
-      if (!req.user) {
-        return res.status(401).json({ error: 'Authentication required' });
-      }
+	return async (req: Request, res: Response, next: NextFunction) => {
+		try {
+			const { projectId } = req.params;
 
-      const userRole = await prisma.userRole.findFirst({
-        where: {
-          userId: req.user.id,
-          projectId: projectId,
-          role: {
-            in: allowedRoles
-          }
-        }
-      });
+			if (!req.user) {
+				return res.status(401).json({ error: 'Authentication required' });
+			}
 
-      if (!userRole) {
-        return res.status(403).json({ error: 'Insufficient permissions' });
-      }
+			const userRole = await prisma.userRole.findFirst({
+				where: {
+					userId: req.user.id,
+					projectId: projectId,
+					role: {
+						in: allowedRoles
+					}
+				}
+			});
 
-      next();
-    } catch (error) {
-      console.error('Role check middleware error:', error);
-      return res.status(500).json({ error: 'Failed to verify permissions' });
-    }
-  };
+			if (!userRole) {
+				return res.status(403).json({ error: 'Insufficient permissions' });
+			}
+
+			next();
+		} catch (error) {
+			console.error('Role check middleware error:', error);
+			return res.status(500).json({ error: 'Failed to verify permissions' });
+		}
+	};
 };
 
 // Optional: Middleware to check if user owns a project
 export const requireProjectOwner = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { projectId } = req.params;
-    
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
+	try {
+		const { projectId } = req.params;
 
-    const userRole = await prisma.userRole.findFirst({
-      where: {
-        userId: req.user.id,
-        projectId: projectId,
-        role: 'PROJECT_OWNER'
-      }
-    });
+		if (!req.user) {
+			return res.status(401).json({ error: 'Authentication required' });
+		}
 
-    if (!userRole) {
-      return res.status(403).json({ error: 'Project owner access required' });
-    }
+		const userRole = await prisma.userRole.findFirst({
+			where: {
+				userId: req.user.id,
+				projectId: projectId,
+				role: 'PROJECT_OWNER'
+			}
+		});
 
-    next();
-  } catch (error) {
-    console.error('Project owner check middleware error:', error);
-    return res.status(500).json({ error: 'Failed to verify project ownership' });
-  }
+		if (!userRole) {
+			return res.status(403).json({ error: 'Project owner access required' });
+		}
+
+		next();
+	} catch (error) {
+		console.error('Project owner check middleware error:', error);
+		return res.status(500).json({ error: 'Failed to verify project ownership' });
+	}
 };
