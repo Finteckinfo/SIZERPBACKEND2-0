@@ -1,127 +1,164 @@
 // src/routes/auth.ts
-import { Router, Request, Response } from 'express';
-import { prisma } from '../utils/database.js';
+import express from 'express';
+import { PrismaClient } from '@prisma/client';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcrypt';
 
-const router = Router();
+const router = express.Router();
+const prisma = new PrismaClient();
 
-/**
- * GET /api/me
- * Get current backend user (id, email, walletAddress, permissions)
- */
-router.get('/me', async (req: Request, res: Response) => {
-  const { userId } = req.query;
-
-  if (!userId) {
-    return res.status(400).json({ error: 'Missing userId parameter' });
-  }
-
+// Login endpoint
+router.post('/login', async (req, res) => {
   try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // Find user by email
     const user = await prisma.user.findUnique({
-      where: { id: userId as string },
+      where: { email },
       select: {
         id: true,
         email: true,
         firstName: true,
         lastName: true,
-        avatarUrl: true,
-        walletAddress: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+        passwordHash: true
+      }
     });
 
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    res.json({ user });
+    // Verify password
+    if (!user.passwordHash) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    const isValidPassword = await bcrypt.compare(password, user.passwordHash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Generate JWT token
+    const jwtSecret = process.env.JWT_SECRET || 'fallback-secret-change-in-production';
+    const token = jwt.sign(
+      { userId: user.id },
+      jwtSecret,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' } as jwt.SignOptions
+    );
+
+    // Return user data and token
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName
+      },
+      token
+    });
   } catch (error) {
-    console.error('[Auth API] Error:', error);
-    res.status(500).json({ error: 'Failed to fetch user data' });
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
-/**
- * GET /api/permissions?resource=project&action=create
- * Check if current user can perform specific actions
- */
-router.get('/permissions', async (req: Request, res: Response) => {
-  const { userId, resource, action } = req.query;
-
-  if (!userId || !resource || !action) {
-    return res.status(400).json({ error: 'Missing required parameters' });
-  }
-
+// Register endpoint
+router.post('/register', async (req, res) => {
   try {
-    let hasPermission = false;
+    const { email, password, firstName, lastName } = req.body;
 
-    switch (resource) {
-      case 'project':
-        switch (action) {
-          case 'create':
-            // Any authenticated user can create projects
-            hasPermission = true;
-            break;
-          case 'edit':
-            // Check if user owns the project or is a manager
-            const userRoles = await prisma.userRole.findMany({
-              where: {
-                userId: userId as string,
-                role: { in: ['PROJECT_OWNER', 'PROJECT_MANAGER'] },
-              },
-            });
-            hasPermission = userRoles.length > 0;
-            break;
-          case 'delete':
-            // Only project owners can delete
-            const ownedProjects = await prisma.userRole.findMany({
-              where: {
-                userId: userId as string,
-                role: 'PROJECT_OWNER',
-              },
-            });
-            hasPermission = ownedProjects.length > 0;
-            break;
-          default:
-            hasPermission = false;
-        }
-        break;
-      
-      case 'department':
-        // Project owners and managers can manage departments
-        const deptRoles = await prisma.userRole.findMany({
-          where: {
-            userId: userId as string,
-            role: { in: ['PROJECT_OWNER', 'PROJECT_MANAGER'] },
-          },
-        });
-        hasPermission = deptRoles.length > 0;
-        break;
-      
-      case 'user':
-        // Project owners can manage team members
-        const userManageRoles = await prisma.userRole.findMany({
-          where: {
-            userId: userId as string,
-            role: 'PROJECT_OWNER',
-          },
-        });
-        hasPermission = userManageRoles.length > 0;
-        break;
-      
-      default:
-        hasPermission = false;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    res.json({ 
-      hasPermission,
-      resource: resource as string,
-      action: action as string,
-      userId: userId as string,
+    // Check if user already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email }
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    // Hash password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Create user
+    const user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash: hashedPassword,
+        firstName: firstName || null,
+        lastName: lastName || null
+      },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true
+      }
+    });
+
+    // Generate JWT token
+    const jwtSecret = process.env.JWT_SECRET || 'fallback-secret-change-in-production';
+    const token = jwt.sign(
+      { userId: user.id },
+      jwtSecret,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' } as jwt.SignOptions
+    );
+
+    // Return user data and token
+    res.status(201).json({
+      user,
+      token
     });
   } catch (error) {
-    console.error('[Permissions API] Error:', error);
-    res.status(500).json({ error: 'Failed to check permissions' });
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// Verify token endpoint
+router.get('/verify', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    const jwtSecret = process.env.JWT_SECRET || 'fallback-secret-change-in-production';
+    
+    try {
+      const decoded = jwt.verify(token, jwtSecret) as { userId: string };
+      const userId = decoded.userId;
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true
+        }
+      });
+
+      if (!user) {
+        return res.status(401).json({ error: 'User not found' });
+      }
+
+      res.json({ user });
+    } catch (jwtError) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+  } catch (error) {
+    console.error('Token verification error:', error);
+    res.status(500).json({ error: 'Token verification failed' });
   }
 });
 
