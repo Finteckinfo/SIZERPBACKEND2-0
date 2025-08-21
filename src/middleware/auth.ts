@@ -40,6 +40,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			const issuer = process.env.CLERK_ISSUER_URL;
 			const audience = process.env.CLERK_AUDIENCE || 'https://sizerpbackend2-0-production.up.railway.app';
 			const skipAudience = process.env.SKIP_AUDIENCE_VALIDATION === 'true';
+			const skipIssuer = process.env.SKIP_ISSUER_VALIDATION === 'true';
 
 			if (!jwksUrl) {
 				console.error('CLERK_JWKS_URL not configured');
@@ -57,18 +58,15 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			} catch {
 				// ignore decoding errors
 			}
-			console.log('[Auth] Verification options:', { issuer, audience, jwksUrl, skipAudience });
+			console.log('[Auth] Verification options:', { issuer, audience, jwksUrl, skipAudience, skipIssuer });
 
 			// Method 1: Try JWKS verification (recommended for RS256 tokens)
 			if (!decoded && jwksUrl) {
 				try {
 					console.log('Attempting JWT verification with JWKS:', jwksUrl);
 					// Verify token using JWKS with proper validation
-					const options: any = {
-						jwksUrl,
-						issuer,
-						clockSkewInMs: 30000
-					};
+					const options: any = { jwksUrl, clockSkewInMs: 30000 };
+					if (!skipIssuer) options.issuer = issuer;
 					if (!skipAudience) options.audience = audience;
 					decoded = await verifyToken(token, options);
 					
@@ -101,11 +99,8 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			if (!decoded && process.env.CLERK_SECRET_KEY) {
 				try {
 					console.log('Attempting JWT verification with secret key fallback');
-					const secretOptions: any = {
-						jwtKey: process.env.CLERK_SECRET_KEY!,
-						issuer,
-						clockSkewInMs: 30000
-					};
+					const secretOptions: any = { jwtKey: process.env.CLERK_SECRET_KEY!, clockSkewInMs: 30000 };
+					if (!skipIssuer) secretOptions.issuer = issuer;
 					if (!skipAudience) secretOptions.audience = audience;
 					decoded = await verifyToken(token, secretOptions);
 					console.log('Secret key verification successful');
