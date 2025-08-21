@@ -1,0 +1,15 @@
+# Clerk Configuration
+CLERK_SECRET_KEY=your_clerk_secret_key_here
+CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key_here
+
+# JWT Verification (Required for RS256 tokens)
+CLERK_JWKS_URL=https://pumped-sheep-45.clerk.accounts.dev/.well-known/jwks.json
+CLERK_ISSUER_URL=https://pumped-sheep-45.clerk.accounts.dev
+CLERK_AUDIENCE=https://sizerpbackend2-0-production.up.railway.app
+
+# Database
+DATABASE_URL=your_database_url_here
+
+# Optional: Skip validation for development
+# SKIP_AUDIENCE_VALIDATION=true
+# SKIP_ISSUER_VALIDATION=true
