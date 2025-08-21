@@ -1,11 +1,21 @@
 import { Request, Response, NextFunction } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
 import { verifyToken, createClerkClient } from '@clerk/backend';
+import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
 
 const prisma = new PrismaClient();
 const clerk = (createClerkClient as any)({
 	secretKey: process.env.CLERK_SECRET_KEY,
 	publishableKey: process.env.CLERK_PUBLISHABLE_KEY
+});
+
+// Initialize JWKS client for automatic key rotation
+const jwksClientInstance = jwksClient({
+	jwksUri: process.env.CLERK_JWKS_URL!,
+	cache: true,
+	cacheMaxEntries: 5,
+	cacheMaxAge: 600000, // 10 minutes
 });
 
 // Extend the Express Request interface to include user
@@ -32,23 +42,32 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 		const token = authHeader.substring(7);
 
 		try {
-			// Attempt JWT verification using JWKS (preferred) or fallback methods
-			const jwksUrl = process.env.CLERK_JWKS_URL; // JWKS endpoint for automatic key rotation
-			const issuer = process.env.CLERK_ISSUER_URL; // Optional issuer validation
+			// Verify JWT token with proper validation
+			const jwksUrl = process.env.CLERK_JWKS_URL;
+			const issuer = process.env.CLERK_ISSUER_URL;
+			const audience = process.env.CLERK_AUDIENCE || 'https://sizerpbackend2-0-production.up.railway.app';
 
-			if (!jwksUrl && !process.env.CLERK_SECRET_KEY) {
-				console.error('No verification material configured (CLERK_JWKS_URL or CLERK_SECRET_KEY)');
+			if (!jwksUrl) {
+				console.error('CLERK_JWKS_URL not configured');
 				return res.status(500).json({ error: 'Authentication configuration error' });
 			}
 
 			let decoded: any | null = null;
 			let lastError: unknown = null;
 
-			// 1) Try JWKS URL first (automatic key rotation, recommended for RS256)
+			// Method 1: Try JWKS verification (recommended for RS256 tokens)
 			if (!decoded && jwksUrl) {
 				try {
 					console.log('Attempting JWT verification with JWKS:', jwksUrl);
-					decoded = await verifyToken(token, { jwksUrl } as any);
+					
+					// Verify token using JWKS with proper validation
+					decoded = await verifyToken(token, { 
+						jwksUrl,
+						issuer,
+						audience,
+						clockTolerance: 30 // 30 seconds tolerance for clock skew
+					} as any);
+					
 					console.log('JWKS verification successful');
 				} catch (e) {
 					lastError = e;
@@ -56,11 +75,36 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 				}
 			}
 
-			// 2) Fallback: secret key (for HS256 templates)
+			// Method 2: Fallback to manual verification using JWKS public key
+			if (!decoded && process.env.CLERK_JWKS_PUBLIC_KEY) {
+				try {
+					console.log('Attempting JWT verification with JWKS public key fallback');
+					
+					// Manual verification using the JWKS public key
+					decoded = jwt.verify(token, process.env.CLERK_JWKS_PUBLIC_KEY, {
+						algorithms: ['RS256'],
+						issuer: issuer,
+						audience: audience,
+						clockTolerance: 30
+					});
+					
+					console.log('JWKS public key verification successful');
+				} catch (e) {
+					lastError = e;
+					console.error('JWKS public key verification failed:', e);
+				}
+			}
+
+			// Method 3: Fallback to secret key (for HS256 templates if needed)
 			if (!decoded && process.env.CLERK_SECRET_KEY) {
 				try {
 					console.log('Attempting JWT verification with secret key fallback');
-					decoded = await verifyToken(token, { jwtKey: process.env.CLERK_SECRET_KEY! });
+					decoded = await verifyToken(token, { 
+						jwtKey: process.env.CLERK_SECRET_KEY!,
+						issuer,
+						audience,
+						clockTolerance: 30
+					} as any);
 					console.log('Secret key verification successful');
 				} catch (e) {
 					lastError = e;
