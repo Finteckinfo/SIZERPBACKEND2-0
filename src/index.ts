@@ -12,6 +12,7 @@ import {
   memoryMonitor 
 } from "./middleware/performance.js";
 import webhookRouter from "./routes/webhook.js";
+import authRouter from "./routes/auth.js";
 import walletRouter from "./routes/wallet.js";
 import dashboardRouter from "./routes/dashboard.js";
 import userRouter from "./routes/user.js";
@@ -30,6 +31,9 @@ const app = express();
 
 // Webhooks (raw body required) must be mounted before JSON body parser
 app.use("/clerk", webhookRouter);
+
+// Authentication routes (must be mounted before JSON body parser for webhooks)
+app.use("/api/auth", authRouter);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());

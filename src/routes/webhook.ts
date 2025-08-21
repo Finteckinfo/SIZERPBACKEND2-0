@@ -49,17 +49,41 @@ router.post(
 
     try {
       if (evt.type === "user.created") {
-        const { id, email_addresses } = evt.data;
+        const { id, email_addresses, first_name, last_name } = evt.data;
 
-        await prisma.user.create({
-          data: {
+        await prisma.user.upsert({
+          where: { id },
+          update: {
+            email: email_addresses[0]?.email_address ?? "",
+            firstName: first_name || null,
+            lastName: last_name || null,
+            updatedAt: new Date()
+          },
+          create: {
             id, // use Clerk's ID as the primary key
             email: email_addresses[0]?.email_address ?? "",
-            passwordHash: "", // empty for SSO users
+            firstName: first_name || null,
+            lastName: last_name || null
           },
         });
 
-        console.log(`[DB] User ${id} inserted successfully`);
+        console.log(`[DB] User ${id} created/updated successfully via webhook`);
+      }
+
+      if (evt.type === "user.updated") {
+        const { id, email_addresses, first_name, last_name } = evt.data;
+
+        await prisma.user.update({
+          where: { id },
+          data: {
+            email: email_addresses[0]?.email_address ?? "",
+            firstName: first_name || null,
+            lastName: last_name || null,
+            updatedAt: new Date()
+          },
+        });
+
+        console.log(`[DB] User ${id} updated successfully via webhook`);
       }
 
       if (evt.type === "user.deleted") {
@@ -69,7 +93,12 @@ router.post(
           where: { id: userId },
         });
 
-        console.log(`[DB] User ${userId} deleted successfully`);
+        console.log(`[DB] User ${userId} deleted successfully via webhook`);
+      }
+
+      if (evt.type === "session.created" || evt.type === "session.ended") {
+        console.log(`[Webhook] Session event: ${evt.type} for user ${evt.data.user_id}`);
+        // These events help track user sessions but don't require database changes
       }
     } catch (dbError) {
       console.error("[Webhook] Database error:", dbError);
