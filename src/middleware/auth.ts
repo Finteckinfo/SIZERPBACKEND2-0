@@ -2,7 +2,6 @@ import { Request, Response, NextFunction } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
 import { verifyToken, createClerkClient } from '@clerk/backend';
 import jwt from 'jsonwebtoken';
-import jwksClient from 'jwks-rsa';
 
 const prisma = new PrismaClient();
 const clerk = (createClerkClient as any)({
@@ -10,13 +9,7 @@ const clerk = (createClerkClient as any)({
 	publishableKey: process.env.CLERK_PUBLISHABLE_KEY
 });
 
-// Initialize JWKS client for automatic key rotation
-const jwksClientInstance = jwksClient({
-	jwksUri: process.env.CLERK_JWKS_URL!,
-	cache: true,
-	cacheMaxEntries: 5,
-	cacheMaxAge: 600000, // 10 minutes
-});
+// Note: JWKS retrieval is handled by @clerk/backend verifyToken
 
 // Extend the Express Request interface to include user
 declare global {
@@ -55,17 +48,26 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			let decoded: any | null = null;
 			let lastError: unknown = null;
 
+			// Log incoming token claims (decoded without verification) for debugging
+			try {
+				const unsafePayloadJson = Buffer.from(token.split('.')[1] || '', 'base64').toString('utf8');
+				const unsafePayload = JSON.parse(unsafePayloadJson);
+				console.log('[Auth] Incoming token iss:', unsafePayload.iss, 'aud:', unsafePayload.aud);
+			} catch {
+				// ignore decoding errors
+			}
+			console.log('[Auth] Verification options:', { issuer, audience, jwksUrl });
+
 			// Method 1: Try JWKS verification (recommended for RS256 tokens)
 			if (!decoded && jwksUrl) {
 				try {
 					console.log('Attempting JWT verification with JWKS:', jwksUrl);
-					
 					// Verify token using JWKS with proper validation
-					decoded = await verifyToken(token, { 
+					decoded = await verifyToken(token, {
 						jwksUrl,
 						issuer,
 						audience,
-						clockTolerance: 30 // 30 seconds tolerance for clock skew
+						clockSkewInMs: 30000 // 30 seconds tolerance for clock skew
 					} as any);
 					
 					console.log('JWKS verification successful');
@@ -75,35 +77,33 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 				}
 			}
 
-			// Method 2: Fallback to manual verification using JWKS public key
-			if (!decoded && process.env.CLERK_JWKS_PUBLIC_KEY) {
-				try {
-					console.log('Attempting JWT verification with JWKS public key fallback');
-					
-					// Manual verification using the JWKS public key
-					decoded = jwt.verify(token, process.env.CLERK_JWKS_PUBLIC_KEY, {
-						algorithms: ['RS256'],
-						issuer: issuer,
-						audience: audience,
-						clockTolerance: 30
-					});
-					
-					console.log('JWKS public key verification successful');
-				} catch (e) {
-					lastError = e;
-					console.error('JWKS public key verification failed:', e);
-				}
-			}
+			// Method 2: (Disabled) Manual verification using CLERK_JWKS_PUBLIC_KEY unless it's a valid PEM
+			// Rely on JWKS above for RS256. Uncomment guarded fallback if you provide a proper PEM-formatted public key.
+			// if (!decoded && process.env.CLERK_JWKS_PUBLIC_KEY?.includes('BEGIN PUBLIC KEY')) {
+			// 	try {
+			// 		console.log('Attempting JWT verification with PEM public key fallback');
+			// 		decoded = jwt.verify(token, process.env.CLERK_JWKS_PUBLIC_KEY, {
+			// 			algorithms: ['RS256'],
+			// 			issuer,
+			// 			audience,
+			// 			clockTolerance: 30
+			// 		});
+			// 		console.log('PEM public key verification successful');
+			// 	} catch (e) {
+			// 		lastError = e;
+			// 		console.error('PEM public key verification failed:', e);
+			// 	}
+			// }
 
 			// Method 3: Fallback to secret key (for HS256 templates if needed)
 			if (!decoded && process.env.CLERK_SECRET_KEY) {
 				try {
 					console.log('Attempting JWT verification with secret key fallback');
-					decoded = await verifyToken(token, { 
+					decoded = await verifyToken(token, {
 						jwtKey: process.env.CLERK_SECRET_KEY!,
 						issuer,
 						audience,
-						clockTolerance: 30
+						clockSkewInMs: 30000
 					} as any);
 					console.log('Secret key verification successful');
 				} catch (e) {
