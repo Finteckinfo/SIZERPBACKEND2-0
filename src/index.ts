@@ -32,9 +32,6 @@ const app = express();
 // Webhooks (raw body required) must be mounted before JSON body parser
 app.use("/clerk", webhookRouter);
 
-// Authentication routes (must be mounted before JSON body parser for webhooks)
-app.use("/api/auth", authRouter);
-
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 app.use(logger);
@@ -47,6 +44,9 @@ app.use(responseOptimizer);
 
 // Apply CORS globally (before routes)
 app.use(corsMiddleware);
+
+// Authentication routes (after middleware setup)
+app.use("/api/auth", authRouter);
 
 // Security middleware only on app routes
 app.use("/app", securityMiddleware);
