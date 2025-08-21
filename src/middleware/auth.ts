@@ -39,6 +39,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			const jwksUrl = process.env.CLERK_JWKS_URL;
 			const issuer = process.env.CLERK_ISSUER_URL;
 			const audience = process.env.CLERK_AUDIENCE || 'https://sizerpbackend2-0-production.up.railway.app';
+			const skipAudience = process.env.SKIP_AUDIENCE_VALIDATION === 'true';
 
 			if (!jwksUrl) {
 				console.error('CLERK_JWKS_URL not configured');
@@ -56,19 +57,20 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			} catch {
 				// ignore decoding errors
 			}
-			console.log('[Auth] Verification options:', { issuer, audience, jwksUrl });
+			console.log('[Auth] Verification options:', { issuer, audience, jwksUrl, skipAudience });
 
 			// Method 1: Try JWKS verification (recommended for RS256 tokens)
 			if (!decoded && jwksUrl) {
 				try {
 					console.log('Attempting JWT verification with JWKS:', jwksUrl);
 					// Verify token using JWKS with proper validation
-					decoded = await verifyToken(token, {
+					const options: any = {
 						jwksUrl,
 						issuer,
-						audience,
-						clockSkewInMs: 30000 // 30 seconds tolerance for clock skew
-					} as any);
+						clockSkewInMs: 30000
+					};
+					if (!skipAudience) options.audience = audience;
+					decoded = await verifyToken(token, options);
 					
 					console.log('JWKS verification successful');
 				} catch (e) {
@@ -99,12 +101,13 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			if (!decoded && process.env.CLERK_SECRET_KEY) {
 				try {
 					console.log('Attempting JWT verification with secret key fallback');
-					decoded = await verifyToken(token, {
+					const secretOptions: any = {
 						jwtKey: process.env.CLERK_SECRET_KEY!,
 						issuer,
-						audience,
 						clockSkewInMs: 30000
-					} as any);
+					};
+					if (!skipAudience) secretOptions.audience = audience;
+					decoded = await verifyToken(token, secretOptions);
 					console.log('Secret key verification successful');
 				} catch (e) {
 					lastError = e;
@@ -114,7 +117,12 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 
 			if (!decoded) {
 				console.error('All token verification methods failed. Last error:', lastError);
-				return res.status(401).json({ error: 'Invalid or expired token' });
+				return res.status(401).json({
+					error: 'Invalid or expired token',
+					...(process.env.NODE_ENV !== 'production'
+						? { details: (lastError as any)?.message || String(lastError) }
+						: {})
+				});
 			}
 
 			// Extract fields with robust fallbacks
