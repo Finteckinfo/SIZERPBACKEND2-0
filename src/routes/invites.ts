@@ -5,7 +5,40 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = Router();
 const prisma = new PrismaClient();
 
+// GET /api/invites - Get all invites for authenticated user
+router.get('/', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    // req.user is guaranteed to exist after authenticateToken middleware
+    
+    const invites = await prisma.projectInvite.findMany({
+      where: {
+        OR: [
+          { userId: req.user!.id },           // Invites sent to this user
+          { email: req.user!.email }          // Invites sent to this email (even if user didn't exist yet)
+        ]
+      },
+      include: {
+        project: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            type: true,
+            priority: true
+          }
+        }
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
 
+    res.json(invites);
+  } catch (error) {
+    console.error('Error fetching user invites:', error);
+    res.status(500).json({ error: 'Failed to fetch invites' });
+  }
+});
 
 // GET /api/invites/user/:userId - Get user's pending invites
 router.get('/user/:userId', authenticateToken, async (req: Request, res: Response) => {
