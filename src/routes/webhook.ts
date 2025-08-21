@@ -14,6 +14,16 @@ if (!webhookSecret) {
   throw new Error("[Webhook] Missing CLERK_WEBHOOK_SECRET in environment variables");
 }
 
+// Clerk Webhook Data Structure:
+// user.created/updated events include:
+// - id: string (user ID)
+// - email_addresses: Array<{email_address: string, id: string, verification: object}>
+// - first_name: string | null
+// - last_name: string | null
+// - username: string | null
+// - created_at: number
+// - updated_at: number
+
 // Raw body middleware for Svix
 router.post(
   "/",
@@ -50,6 +60,15 @@ router.post(
     try {
       if (evt.type === "user.created") {
         const { id, email_addresses, first_name, last_name } = evt.data;
+        
+        // Enhanced logging to debug what Clerk sends
+        console.log(`[Webhook] User created - Raw data:`, {
+          id,
+          email_addresses: email_addresses?.map((e: any) => e.email_address),
+          first_name,
+          last_name,
+          fullData: evt.data
+        });
 
         await prisma.user.upsert({
           where: { id },
@@ -67,11 +86,20 @@ router.post(
           },
         });
 
-        console.log(`[DB] User ${id} created/updated successfully via webhook`);
+        console.log(`[DB] User ${id} created/updated successfully via webhook with name: ${first_name || 'N/A'} ${last_name || 'N/A'}`);
       }
 
       if (evt.type === "user.updated") {
         const { id, email_addresses, first_name, last_name } = evt.data;
+        
+        // Enhanced logging to debug what Clerk sends
+        console.log(`[Webhook] User updated - Raw data:`, {
+          id,
+          email_addresses: email_addresses?.map((e: any) => e.email_address),
+          first_name,
+          last_name,
+          fullData: evt.data
+        });
 
         await prisma.user.update({
           where: { id },
@@ -83,7 +111,7 @@ router.post(
           },
         });
 
-        console.log(`[DB] User ${id} updated successfully via webhook`);
+        console.log(`[DB] User ${id} updated successfully via webhook with name: ${first_name || 'N/A'} ${last_name || 'N/A'}`);
       }
 
       if (evt.type === "user.deleted") {

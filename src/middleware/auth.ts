@@ -1,13 +1,30 @@
 import { Request, Response, NextFunction } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
-import { verifyToken, createClerkClient } from '@clerk/backend';
+import { createClerkClient } from '@clerk/backend';
 import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
 
 const prisma = new PrismaClient();
 const clerk = (createClerkClient as any)({
 	secretKey: process.env.CLERK_SECRET_KEY,
 	publishableKey: process.env.CLERK_PUBLISHABLE_KEY
 });
+
+// Create JWKS client for RS256 verification
+const client = jwksClient({
+	jwksUri: process.env.CLERK_JWKS_URL || 'https://pumped-sheep-45.clerk.accounts.dev/.well-known/jwks.json'
+});
+
+function getKey(header: any, callback: any) {
+	client.getSigningKey(header.kid, function(err, key) {
+		if (err) {
+			callback(err);
+			return;
+		}
+		const signingKey = key?.getPublicKey();
+		callback(null, signingKey);
+	});
+}
 
 // Extend the Express Request interface to include user
 declare global {
@@ -71,8 +88,19 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			}
 
 			// Verify token using JWKS (RS256)
-			const decoded = await verifyToken(token, {
-				clockSkewInMs: 30000
+			const decoded = await new Promise((resolve, reject) => {
+				jwt.verify(token, getKey, {
+					issuer: process.env.CLERK_ISSUER_URL,
+					audience: process.env.CLERK_AUDIENCE,
+					algorithms: ['RS256'],
+					clockTolerance: 30
+				}, (err, decoded) => {
+					if (err) {
+						reject(err);
+					} else {
+						resolve(decoded);
+					}
+				});
 			});
 
 			console.log('[Auth] Token verification successful');
