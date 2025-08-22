@@ -67,8 +67,8 @@ app.use("/api/user/wallet", walletRouter);
 // Project management routes
 app.use("/api/projects", projectsRouter);
 
-// Department management routes (nested under projects)
-app.use("/api/projects", departmentsRouter);
+// Department management routes
+app.use("/api/departments", departmentsRouter);
 
 // Role and invite management routes (nested under projects)
 app.use("/api/projects", rolesRouter);
