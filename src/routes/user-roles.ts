@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
+import { checkProjectAccess, checkProjectRole } from '../utils/accessControl.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -19,17 +20,11 @@ router.get('/project/:projectId/user/:userId', authenticateToken, async (req: Re
   try {
     const { projectId, userId } = req.params;
 
-    // Check if requesting user has access to this project
+    // Check if requesting user has access to this project (including ownership)
     if (!requireAuth(req, res)) return;
 
-    const requestingUserRole = await prisma.userRole.findFirst({
-      where: {
-        userId: req.user!.id,
-        projectId: projectId
-      }
-    });
-
-    if (!requestingUserRole) {
+    const access = await checkProjectAccess(req.user!.id, projectId);
+    if (!access.hasAccess) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -85,25 +80,16 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'User role not found' });
     }
 
-    // Check if user has permission to update this role
+    // Check if user has permission to update this role (including ownership)
     if (!requireAuth(req, res)) return;
 
-    const requestingUserRole = await prisma.userRole.findFirst({
-      where: {
-        userId: req.user!.id,
-        projectId: userRole.projectId,
-        role: {
-          in: ['PROJECT_OWNER', 'PROJECT_MANAGER']
-        }
-      }
-    });
-
-    if (!requestingUserRole) {
+    const access = await checkProjectRole(req.user!.id, userRole.projectId, ['PROJECT_OWNER', 'PROJECT_MANAGER']);
+    if (!access.hasRole) {
       return res.status(403).json({ error: 'Insufficient permissions to update user role' });
     }
 
     // Project owners can update any role, managers can only update employee roles
-    if (requestingUserRole.role === 'PROJECT_MANAGER' && userRole.role === 'PROJECT_OWNER') {
+    if (access.role === 'PROJECT_MANAGER' && userRole.role === 'PROJECT_OWNER') {
       return res.status(403).json({ error: 'Managers cannot modify project owner roles' });
     }
 
@@ -189,17 +175,11 @@ router.get('/project/:projectId', authenticateToken, async (req: Request, res: R
   try {
     const { projectId } = req.params;
 
-    // Check if user has access to this project
+    // Check if user has access to this project (including ownership)
     if (!requireAuth(req, res)) return;
 
-    const userRole = await prisma.userRole.findFirst({
-      where: {
-        userId: req.user!.id,
-        projectId: projectId
-      }
-    });
-
-    if (!userRole) {
+    const access = await checkProjectAccess(req.user!.id, projectId);
+    if (!access.hasAccess) {
       return res.status(403).json({ error: 'Access denied' });
     }
 

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
+import { checkProjectAccess } from '../utils/accessControl.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -289,17 +290,11 @@ router.get('/project/:projectId', authenticateToken, async (req: Request, res: R
     const { projectId } = req.params;
     const { status, departmentId, assignedTo, page = 1, limit = 50 } = req.query;
 
-    // Check if user has access to this project
+    // Check if user has access to this project (including ownership)
     if (!requireAuth(req, res)) return;
 
-    const userRole = await prisma.userRole.findFirst({
-      where: {
-        userId: req.user!.id,
-        projectId: projectId
-      }
-    });
-
-    if (!userRole) {
+    const access = await checkProjectAccess(req.user!.id, projectId);
+    if (!access.hasAccess) {
       return res.status(403).json({ error: 'Access denied to this project' });
     }
 

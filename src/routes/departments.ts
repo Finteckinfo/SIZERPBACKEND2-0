@@ -2,6 +2,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/database.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { checkProjectAccess, checkProjectRole } from '../utils/accessControl.js';
 
 const router = Router();
 
@@ -393,17 +394,11 @@ router.get('/project/:projectId', authenticateToken, async (req: Request, res: R
   try {
     const { projectId } = req.params;
 
-    // Check if user has access to this project
+    // Check if user has access to this project (including ownership)
     if (!requireAuth(req, res)) return;
 
-    const userRole = await prisma.userRole.findFirst({
-      where: {
-        userId: req.user!.id,
-        projectId: projectId
-      }
-    });
-
-    if (!userRole) {
+    const access = await checkProjectAccess(req.user!.id, projectId);
+    if (!access.hasAccess) {
       return res.status(403).json({ error: 'Access denied to this project' });
     }
 
@@ -439,20 +434,11 @@ router.put('/project/:projectId/reorder', authenticateToken, async (req: Request
     const { projectId } = req.params;
     const { departmentOrders } = req.body; // Array of { id, order }
 
-    // Check if user has permission to reorder departments
+    // Check if user has permission to reorder departments (including ownership)
     if (!requireAuth(req, res)) return;
 
-    const userRole = await prisma.userRole.findFirst({
-      where: {
-        userId: req.user!.id,
-        projectId: projectId,
-        role: {
-          in: ['PROJECT_OWNER', 'PROJECT_MANAGER']
-        }
-      }
-    });
-
-    if (!userRole) {
+    const access = await checkProjectRole(req.user!.id, projectId, ['PROJECT_OWNER', 'PROJECT_MANAGER']);
+    if (!access.hasRole) {
       return res.status(403).json({ error: 'Insufficient permissions to reorder departments' });
     }
 

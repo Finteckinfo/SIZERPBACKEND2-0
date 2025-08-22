@@ -2,6 +2,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/database.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { checkProjectAccess } from '../utils/accessControl.js';
 
 const router = Router();
 
@@ -482,10 +483,15 @@ router.get('/my-projects/simple', authenticateToken, async (req: Request, res: R
  * GET /api/projects/:projectId
  * Get single project details
  */
-router.get('/:projectId', async (req: Request, res: Response) => {
+router.get('/:projectId', authenticateToken, async (req: Request, res: Response) => {
   const { projectId } = req.params;
 
   try {
+    // Check if user has access to this project (including ownership)
+    const access = await checkProjectAccess(req.user!.id, projectId);
+    if (!access.hasAccess) {
+      return res.status(403).json({ error: 'Access denied to this project' });
+    }
     const project = await prisma.project.findUnique({
       where: { id: projectId },
       select: {
