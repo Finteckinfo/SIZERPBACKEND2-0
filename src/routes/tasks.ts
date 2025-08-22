@@ -283,6 +283,95 @@ router.post('/:id/assign/:roleId', authenticateToken, async (req: Request, res: 
   }
 });
 
+// GET /api/tasks/project/:projectId - Get project tasks
+router.get('/project/:projectId', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+    const { status, departmentId, assignedTo, page = 1, limit = 50 } = req.query;
+
+    // Check if user has access to this project
+    if (!requireAuth(req, res)) return;
+
+    const userRole = await prisma.userRole.findFirst({
+      where: {
+        userId: req.user!.id,
+        projectId: projectId
+      }
+    });
+
+    if (!userRole) {
+      return res.status(403).json({ error: 'Access denied to this project' });
+    }
+
+    const pageNum = parseInt(page as string) || 1;
+    const limitNum = Math.min(parseInt(limit as string) || 50, 100);
+    const offset = (pageNum - 1) * limitNum;
+
+    const where: any = {
+      department: { projectId }
+    };
+
+    if (status) where.status = status;
+    if (departmentId) where.departmentId = departmentId;
+    if (assignedTo) where.assignedRoleId = assignedTo;
+
+    const [tasks, totalCount] = await Promise.all([
+      prisma.task.findMany({
+        where,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          status: true,
+          priority: true,
+          createdAt: true,
+          updatedAt: true,
+          department: {
+            select: {
+              id: true,
+              name: true,
+              type: true
+            }
+          },
+          assignedRole: {
+            select: {
+              id: true,
+              user: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  email: true,
+                  avatarUrl: true
+                }
+              }
+            }
+          }
+        },
+        skip: offset,
+        take: limitNum,
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.task.count({ where })
+    ]);
+
+    res.json({
+      tasks,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limitNum),
+        hasNext: pageNum * limitNum < totalCount,
+        hasPrev: pageNum > 1
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching project tasks:', error);
+    res.status(500).json({ error: 'Failed to fetch project tasks' });
+  }
+});
+
 // GET /api/tasks/department/:departmentId - Get department tasks
 router.get('/department/:departmentId', authenticateToken, async (req: Request, res: Response) => {
   try {
