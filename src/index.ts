@@ -25,6 +25,7 @@ import rolesRouter from "./routes/roles.js";
 import invitesRouter from "./routes/invites.js";
 import userRolesRouter from "./routes/user-roles.js";
 import tasksRouter from "./routes/tasks.js";
+import roleAwareRouter from "./routes/role-aware.js";
 
 dotenv.config();
 const app = express();
@@ -81,6 +82,9 @@ app.use("/api/user-roles", userRolesRouter);
 
 // Task management routes
 app.use("/api/tasks", tasksRouter);
+
+// Role-aware routes
+app.use("/api", roleAwareRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);
