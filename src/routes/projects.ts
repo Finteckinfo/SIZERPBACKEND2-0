@@ -1421,24 +1421,58 @@ router.delete('/:projectId/users/:userId', async (req: Request, res: Response) =
 
 /**
  * GET /api/projects/:projectId/tasks
- * Get project tasks
+ * Get all tasks for a project with filtering and pagination
  */
 router.get('/:projectId/tasks', async (req: Request, res: Response) => {
   const { projectId } = req.params;
-  const { status, departmentId, assignedTo, page = 1, limit = 50 } = req.query;
+  const { 
+    page = 1, 
+    limit = 20, 
+    status, 
+    priority,
+    departmentId,
+    assignedRoleId,
+    search,
+    sortBy = 'createdAt',
+    sortOrder = 'desc'
+  } = req.query;
 
   try {
     const pageNum = parseInt(page as string) || 1;
-    const limitNum = Math.min(parseInt(limit as string) || 50, 100);
+    const limitNum = Math.min(parseInt(limit as string) || 20, 100);
     const offset = (pageNum - 1) * limitNum;
 
+    // Build where clause
     const where: any = {
       department: { projectId }
     };
+    
+    if (status) {
+      where.status = status;
+    }
+    
+    if (priority) {
+      where.priority = priority;
+    }
+    
+    if (departmentId) {
+      where.departmentId = departmentId;
+    }
+    
+    if (assignedRoleId) {
+      where.assignedRoleId = assignedRoleId;
+    }
+    
+    if (search) {
+      where.OR = [
+        { title: { contains: search as string, mode: 'insensitive' } },
+        { description: { contains: search as string, mode: 'insensitive' } }
+      ];
+    }
 
-    if (status) where.status = status;
-    if (departmentId) where.departmentId = departmentId;
-    if (assignedTo) where.employeeId = assignedTo;
+    // Build orderBy clause
+    const orderBy: any = {};
+    orderBy[sortBy as string] = sortOrder;
 
     const [tasks, totalCount] = await Promise.all([
       prisma.task.findMany({
@@ -1448,6 +1482,7 @@ router.get('/:projectId/tasks', async (req: Request, res: Response) => {
           title: true,
           description: true,
           status: true,
+          priority: true,
           createdAt: true,
           updatedAt: true,
           department: {
@@ -1457,32 +1492,44 @@ router.get('/:projectId/tasks', async (req: Request, res: Response) => {
               type: true
             }
           },
-          assignedTo: {
+          assignedRole: {
             select: {
               id: true,
-              firstName: true,
-              lastName: true,
-              email: true,
-              avatarUrl: true
+              user: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                  email: true,
+                  avatarUrl: true
+                }
+              }
             }
           },
-          payments: {
+          _count: {
             select: {
-              id: true,
-              amount: true,
-              status: true
+              payments: true
             }
           }
         },
         skip: offset,
         take: limitNum,
-        orderBy: { createdAt: 'desc' }
+        orderBy
       }),
       prisma.task.count({ where })
     ]);
 
+    // Add computed fields
+    const tasksWithStats = tasks.map(task => ({
+      ...task,
+      paymentCount: task._count.payments,
+      assignedUserName: task.assignedRole?.user?.firstName && task.assignedRole?.user?.lastName 
+        ? `${task.assignedRole.user.firstName} ${task.assignedRole.user.lastName}`.trim()
+        : task.assignedRole?.user?.email || 'Unassigned'
+    }));
+
     res.json({
-      tasks,
+      tasks: tasksWithStats,
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -1494,83 +1541,148 @@ router.get('/:projectId/tasks', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to fetch tasks' });
+    res.status(500).json({ error: 'Failed to fetch project tasks' });
   }
 });
 
 /**
- * POST /api/projects/:projectId/tasks
- * Create new task
+ * GET /api/projects/:projectId/tasks/:taskId
+ * Get a specific task by ID
  */
-router.post('/:projectId/tasks', async (req: Request, res: Response) => {
-  const { projectId } = req.params;
-  const { title, description, departmentId, assignedTo } = req.body;
-
-  try {
-    // Verify department belongs to project
-    const department = await prisma.department.findFirst({
-      where: {
-        id: departmentId,
-        projectId
-      }
-    });
-
-    if (!department) {
-      return res.status(400).json({ error: 'Invalid department for this project' });
-    }
-
-    const task = await prisma.task.create({
-      data: {
-        title,
-        description,
-        departmentId,
-        employeeId: assignedTo
-      },
-      include: {
-        department: {
-          select: {
-            id: true,
-            name: true,
-            type: true
-          }
-        },
-        assignedTo: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true
-          }
-        }
-      }
-    });
-
-    res.status(201).json(task);
-  } catch (error) {
-    console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to create task' });
-  }
-});
-
-/**
- * PATCH /api/projects/:projectId/tasks/:taskId
- * Update task
- */
-router.patch('/:projectId/tasks/:taskId', async (req: Request, res: Response) => {
+router.get('/:projectId/tasks/:taskId', async (req: Request, res: Response) => {
   const { projectId, taskId } = req.params;
-  const { title, description, departmentId, assignedTo } = req.body;
 
   try {
-    const task = await prisma.task.update({
+    const task = await prisma.task.findFirst({
       where: {
         id: taskId,
         department: { projectId }
       },
+      include: {
+        department: {
+          select: {
+            id: true,
+            name: true,
+            type: true
+          }
+        },
+        assignedRole: {
+          select: {
+            id: true,
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                avatarUrl: true
+              }
+            }
+          }
+        },
+        payments: {
+          select: {
+            id: true,
+            amount: true,
+            status: true,
+            payer: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true
+              }
+            },
+            payee: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true
+              }
+            },
+            createdAt: true,
+            releasedAt: true
+          }
+        }
+      }
+    });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    res.json(task);
+  } catch (error) {
+    console.error('[Projects API] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch task' });
+  }
+});
+
+/**
+ * PUT /api/projects/:projectId/tasks/:taskId
+ * Update a task
+ */
+router.put('/:projectId/tasks/:taskId', async (req: Request, res: Response) => {
+  const { projectId, taskId } = req.params;
+  const { title, description, status, priority, departmentId, assignedRoleId } = req.body;
+
+  try {
+    // Check if task exists and belongs to project
+    const existingTask = await prisma.task.findFirst({
+      where: {
+        id: taskId,
+        department: { projectId }
+      }
+    });
+
+    if (!existingTask) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Validate department if changing
+    if (departmentId && departmentId !== existingTask.departmentId) {
+      const department = await prisma.department.findFirst({
+        where: {
+          id: departmentId,
+          projectId
+        }
+      });
+
+      if (!department) {
+        return res.status(404).json({ error: 'Department not found in this project' });
+      }
+    }
+
+    // Validate assigned role if changing
+    if (assignedRoleId && assignedRoleId !== existingTask.assignedRoleId) {
+      const userRole = await prisma.userRole.findFirst({
+        where: {
+          id: assignedRoleId,
+          projectId
+        }
+      });
+
+      if (!userRole) {
+        return res.status(404).json({ error: 'User role not found in this project' });
+      }
+
+      // Check if user role has access to the department
+      const targetDeptId = departmentId || existingTask.departmentId;
+      if (userRole.departmentScope.length > 0 && !userRole.departmentScope.includes(targetDeptId)) {
+        return res.status(403).json({ error: 'User role does not have access to this department' });
+      }
+    }
+
+    const updatedTask = await prisma.task.update({
+      where: { id: taskId },
       data: {
         ...(title && { title }),
         ...(description !== undefined && { description }),
+        ...(status && { status }),
+        ...(priority && { priority }),
         ...(departmentId && { departmentId }),
-        ...(assignedTo !== undefined && { employeeId: assignedTo })
+        ...(assignedRoleId !== undefined && { assignedRoleId })
       },
       include: {
         department: {
@@ -1580,18 +1692,27 @@ router.patch('/:projectId/tasks/:taskId', async (req: Request, res: Response) =>
             type: true
           }
         },
-        assignedTo: {
+        assignedRole: {
           select: {
             id: true,
-            firstName: true,
-            lastName: true,
-            email: true
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                avatarUrl: true
+              }
+            }
           }
         }
       }
     });
 
-    res.json(task);
+    res.json({
+      message: 'Task updated successfully',
+      task: updatedTask
+    });
   } catch (error) {
     console.error('[Projects API] Error:', error);
     res.status(500).json({ error: 'Failed to update task' });
@@ -1600,41 +1721,46 @@ router.patch('/:projectId/tasks/:taskId', async (req: Request, res: Response) =>
 
 /**
  * DELETE /api/projects/:projectId/tasks/:taskId
- * Delete task
+ * Delete a task (only if no payments exist)
  */
 router.delete('/:projectId/tasks/:taskId', async (req: Request, res: Response) => {
   const { projectId, taskId } = req.params;
 
   try {
-    // Check if task has payments
-    const taskWithPayments = await prisma.task.findUnique({
-      where: { id: taskId },
-      select: {
-        id: true,
+    // Check if task exists and belongs to project
+    const task = await prisma.task.findFirst({
+      where: {
+        id: taskId,
+        department: { projectId }
+      },
+      include: {
         _count: {
-          select: { payments: true }
+          select: {
+            payments: true
+          }
         }
       }
     });
 
-    if (!taskWithPayments) {
+    if (!task) {
       return res.status(404).json({ error: 'Task not found' });
     }
 
-    if (taskWithPayments._count.payments > 0) {
+    if (task._count.payments > 0) {
       return res.status(400).json({ 
-        error: 'Cannot delete task with existing payments. Please handle payments first.' 
+        error: 'Cannot delete task with existing payments',
+        paymentCount: task._count.payments
       });
     }
 
     await prisma.task.delete({
-      where: {
-        id: taskId,
-        department: { projectId }
-      }
+      where: { id: taskId }
     });
 
-    res.json({ message: 'Task deleted successfully' });
+    res.json({
+      message: 'Task deleted successfully',
+      taskId
+    });
   } catch (error) {
     console.error('[Projects API] Error:', error);
     res.status(500).json({ error: 'Failed to delete task' });
@@ -1642,42 +1768,85 @@ router.delete('/:projectId/tasks/:taskId', async (req: Request, res: Response) =
 });
 
 /**
- * PATCH /api/projects/:projectId/tasks/:taskId/status
- * Change task status
+ * POST /api/projects/:projectId/tasks/:taskId/assign
+ * Assign or reassign a task to a user role
  */
-router.patch('/:projectId/tasks/:taskId/status', async (req: Request, res: Response) => {
+router.post('/:projectId/tasks/:taskId/assign', async (req: Request, res: Response) => {
   const { projectId, taskId } = req.params;
-  const { status } = req.body;
+  const { assignedRoleId } = req.body;
 
   try {
-    const task = await prisma.task.update({
+    // Check if task exists and belongs to project
+    const task = await prisma.task.findFirst({
       where: {
         id: taskId,
         department: { projectId }
       },
-      data: { status },
+      include: {
+        department: true
+      }
+    });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Check if assigned role exists and belongs to project
+    if (assignedRoleId) {
+      const userRole = await prisma.userRole.findFirst({
+        where: {
+          id: assignedRoleId,
+          projectId
+        }
+      });
+
+      if (!userRole) {
+        return res.status(404).json({ error: 'User role not found in this project' });
+      }
+
+      // Check if user role has access to this department
+      if (userRole.departmentScope.length > 0 && !userRole.departmentScope.includes(task.departmentId)) {
+        return res.status(403).json({ error: 'User role does not have access to this department' });
+      }
+    }
+
+    const updatedTask = await prisma.task.update({
+      where: { id: taskId },
+      data: {
+        assignedRoleId: assignedRoleId || null
+      },
       include: {
         department: {
           select: {
             id: true,
-            name: true
+            name: true,
+            type: true
           }
         },
-        assignedTo: {
+        assignedRole: {
           select: {
             id: true,
-            firstName: true,
-            lastName: true,
-            email: true
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                avatarUrl: true
+              }
+            }
           }
         }
       }
     });
 
-    res.json(task);
+    res.json({
+      message: assignedRoleId ? 'Task assigned successfully' : 'Task unassigned successfully',
+      task: updatedTask
+    });
   } catch (error) {
     console.error('[Projects API] Error:', error);
-    res.status(500).json({ error: 'Failed to update task status' });
+    res.status(500).json({ error: 'Failed to assign task' });
   }
 });
 
@@ -1810,7 +1979,20 @@ router.post('/:projectId/invites', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Project not found' });
     }
 
-    // Check if user already has a role or invite
+    // First, mark any expired invites as EXPIRED
+    await prisma.projectInvite.updateMany({
+      where: {
+        email,
+        projectId,
+        status: 'PENDING',
+        expiresAt: { lt: new Date() }
+      },
+      data: {
+        status: 'EXPIRED'
+      }
+    });
+
+    // Check if user already has a role or active invite
     const existingInvite = await prisma.projectInvite.findFirst({
       where: {
         email,
@@ -1822,6 +2004,17 @@ router.post('/:projectId/invites', async (req: Request, res: Response) => {
     if (existingInvite) {
       return res.status(400).json({ error: 'User already has an active invite or role in this project' });
     }
+
+    // Check if user has an expired invite - if so, we can allow re-inviting
+    const expiredInvite = await prisma.projectInvite.findFirst({
+      where: {
+        email,
+        projectId,
+        status: 'EXPIRED'
+      }
+    });
+
+    // If there's an expired invite, we'll create a new one (this is allowed)
 
     const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
 
@@ -1870,6 +2063,16 @@ router.patch('/:projectId/invites/:inviteId', async (req: Request, res: Response
     }
 
     if (status === 'ACCEPTED' && userId) {
+      // Check if invite has expired
+      if (invite.expiresAt < new Date()) {
+        // Mark the invite as expired
+        await prisma.projectInvite.update({
+          where: { id: inviteId },
+          data: { status: 'EXPIRED' }
+        });
+        return res.status(400).json({ error: 'Invite has expired' });
+      }
+
       // Accept the invite in a transaction
       await prisma.$transaction(async (tx) => {
         // Create user role

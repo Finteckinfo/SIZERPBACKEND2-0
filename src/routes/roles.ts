@@ -141,6 +141,19 @@ router.post('/:projectId/invites', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Project not found' });
     }
 
+    // First, mark any expired invites as EXPIRED
+    await prisma.projectInvite.updateMany({
+      where: {
+        projectId,
+        email,
+        status: 'PENDING',
+        expiresAt: { lt: new Date() }
+      },
+      data: {
+        status: 'EXPIRED'
+      }
+    });
+
     // Check if user already has a role or invite
     const existingRole = await prisma.userRole.findFirst({
       where: {
@@ -159,15 +172,26 @@ router.post('/:projectId/invites', async (req: Request, res: Response) => {
       where: {
         projectId,
         email,
-        status: 'PENDING',
+        status: { in: ['PENDING', 'ACCEPTED'] },
       },
     });
 
     if (existingInvite) {
       return res.status(409).json({ 
-        error: 'User already has a pending invite',
+        error: 'User already has an active invite or role in this project',
       });
     }
+
+    // Check if user has an expired invite - if so, we can allow re-inviting
+    const expiredInvite = await prisma.projectInvite.findFirst({
+      where: {
+        projectId,
+        email,
+        status: 'EXPIRED',
+      },
+    });
+
+    // If there's an expired invite, we'll create a new one (this is allowed)
 
     // Create the invite
     const invite = await prisma.projectInvite.create({
@@ -244,6 +268,11 @@ router.put('/:projectId/invites/:inviteId/accept', async (req: Request, res: Res
     }
 
     if (invite.expiresAt < new Date()) {
+      // Mark the invite as expired
+      await prisma.projectInvite.update({
+        where: { id: inviteId },
+        data: { status: 'EXPIRED' }
+      });
       return res.status(400).json({ error: 'Invite has expired' });
     }
 
