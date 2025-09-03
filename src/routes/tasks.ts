@@ -23,12 +23,34 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
     // Check if user has access to this department
     if (!requireAuth(req, res)) return;
 
+    // First, get the department to find its project
+    const department = await prisma.department.findUnique({
+      where: { id: departmentId },
+      include: { project: true }
+    });
+
+    if (!department) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    // Check if user has access to this project and department
     const userRole = await prisma.userRole.findFirst({
       where: {
         userId: req.user!.id,
-        accessibleDepartments: {
-          some: { id: departmentId }
-        }
+        projectId: department.projectId,
+        OR: [
+          // Project owners can create tasks in any department
+          { role: 'PROJECT_OWNER' },
+          // Project managers can create tasks in any department
+          { role: 'PROJECT_MANAGER' },
+          // Employees can only create tasks in departments they have access to
+          {
+            role: 'EMPLOYEE',
+            accessibleDepartments: {
+              some: { id: departmentId }
+            }
+          }
+        ]
       },
       include: { project: true }
     });
@@ -37,7 +59,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Access denied to this department' });
     }
 
-    // Check if user has permission to create tasks (owner, manager, or employee with task creation rights)
+    // Check if user has permission to create tasks
     if (userRole.role === 'EMPLOYEE') {
       // Employees might have limited task creation rights - you can customize this logic
       return res.status(403).json({ error: 'Employees cannot create tasks' });
@@ -99,9 +121,20 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
     const userRole = await prisma.userRole.findFirst({
       where: {
         userId: req.user!.id,
-        accessibleDepartments: {
-          some: { id: task.departmentId }
-        }
+        projectId: task.department.projectId,
+        OR: [
+          // Project owners can update tasks in any department
+          { role: 'PROJECT_OWNER' },
+          // Project managers can update tasks in any department
+          { role: 'PROJECT_MANAGER' },
+          // Employees can only update tasks in departments they have access to
+          {
+            role: 'EMPLOYEE',
+            accessibleDepartments: {
+              some: { id: task.departmentId }
+            }
+          }
+        ]
       }
     });
 
@@ -180,9 +213,20 @@ router.delete('/:id', authenticateToken, async (req: Request, res: Response) => 
     const userRole = await prisma.userRole.findFirst({
       where: {
         userId: req.user!.id,
-        accessibleDepartments: {
-          some: { id: task.departmentId }
-        }
+        projectId: task.department.projectId,
+        OR: [
+          // Project owners can delete tasks in any department
+          { role: 'PROJECT_OWNER' },
+          // Project managers can delete tasks in any department
+          { role: 'PROJECT_MANAGER' },
+          // Employees can only delete tasks in departments they have access to
+          {
+            role: 'EMPLOYEE',
+            accessibleDepartments: {
+              some: { id: task.departmentId }
+            }
+          }
+        ]
       }
     });
 
@@ -240,9 +284,20 @@ router.post('/:id/assign/:roleId', authenticateToken, async (req: Request, res: 
     const userRole = await prisma.userRole.findFirst({
       where: {
         userId: req.user!.id,
-        accessibleDepartments: {
-          some: { id: task.departmentId }
-        }
+        projectId: task.department.projectId,
+        OR: [
+          // Project owners can assign tasks in any department
+          { role: 'PROJECT_OWNER' },
+          // Project managers can assign tasks in any department
+          { role: 'PROJECT_MANAGER' },
+          // Employees can only assign tasks in departments they have access to
+          {
+            role: 'EMPLOYEE',
+            accessibleDepartments: {
+              some: { id: task.departmentId }
+            }
+          }
+        ]
       }
     });
 
@@ -375,12 +430,33 @@ router.get('/department/:departmentId', authenticateToken, async (req: Request, 
     // Check if user has access to this department
     if (!requireAuth(req, res)) return;
 
+    // First, get the department to find its project
+    const department = await prisma.department.findUnique({
+      where: { id: departmentId },
+      include: { project: true }
+    });
+
+    if (!department) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
     const userRole = await prisma.userRole.findFirst({
       where: {
         userId: req.user!.id,
-        accessibleDepartments: {
-          some: { id: departmentId }
-        }
+        projectId: department.projectId,
+        OR: [
+          // Project owners can view tasks in any department
+          { role: 'PROJECT_OWNER' },
+          // Project managers can view tasks in any department
+          { role: 'PROJECT_MANAGER' },
+          // Employees can only view tasks in departments they have access to
+          {
+            role: 'EMPLOYEE',
+            accessibleDepartments: {
+              some: { id: departmentId }
+            }
+          }
+        ]
       }
     });
 
