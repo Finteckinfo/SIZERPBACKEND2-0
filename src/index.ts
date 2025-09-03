@@ -84,7 +84,7 @@ app.use("/api/user-roles", userRolesRouter);
 app.use("/api/tasks", tasksRouter);
 
 // Role-aware routes
-app.use("/api", roleAwareRouter);
+app.use("/api/role-aware", roleAwareRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);

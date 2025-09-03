@@ -150,8 +150,8 @@ function checkAction(ctx: NonNullable<Awaited<ReturnType<typeof getProjectRoleCo
   }
 }
 
-// GET /api/projects/:projectId/my-role
-router.get('/:projectId/my-role', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/my-role
+router.get('/projects/:projectId/my-role', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -172,8 +172,8 @@ router.get('/:projectId/my-role', authenticateToken, async (req: Request, res: R
   }
 });
 
-// GET /api/projects/:projectId/permissions
-router.get('/:projectId/permissions', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/permissions
+router.get('/projects/:projectId/permissions', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -190,7 +190,7 @@ router.get('/:projectId/permissions', authenticateToken, async (req: Request, re
   }
 });
 
-// POST /api/access/check
+// POST /api/role-aware/access/check
 router.post('/access/check', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
@@ -209,8 +209,8 @@ router.post('/access/check', authenticateToken, async (req: Request, res: Respon
   }
 });
 
-// GET /api/projects/:projectId/departments/accessible
-router.get('/:projectId/departments/accessible', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/departments/accessible
+router.get('/projects/:projectId/departments/accessible', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -242,8 +242,8 @@ router.get('/:projectId/departments/accessible', authenticateToken, async (req: 
   }
 });
 
-// GET /api/projects/:projectId/tasks (role-aware)
-router.get('/:projectId/tasks', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/tasks (role-aware)
+router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -354,8 +354,8 @@ router.get('/:projectId/tasks', authenticateToken, async (req: Request, res: Res
   }
 });
 
-// GET /api/projects/:projectId/team/accessible
-router.get('/:projectId/team/accessible', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/team/accessible
+router.get('/projects/:projectId/team/accessible', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -401,8 +401,8 @@ router.get('/:projectId/team/accessible', authenticateToken, async (req: Request
 export default router;
 // ---- Additional role-aware endpoints ----
 
-// GET /api/projects/:projectId/overview
-router.get('/:projectId/overview', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/overview
+router.get('/projects/:projectId/overview', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -441,8 +441,8 @@ router.get('/:projectId/overview', authenticateToken, async (req: Request, res: 
   }
 });
 
-// GET /api/projects/:projectId/stats
-router.get('/:projectId/stats', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/stats
+router.get('/projects/:projectId/stats', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -476,8 +476,8 @@ router.get('/:projectId/stats', authenticateToken, async (req: Request, res: Res
   }
 });
 
-// GET /api/projects/:projectId/my-stats (employee)
-router.get('/:projectId/my-stats', authenticateToken, async (req: Request, res: Response) => {
+// GET /api/role-aware/projects/:projectId/my-stats (employee)
+router.get('/projects/:projectId/my-stats', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
@@ -503,7 +503,7 @@ router.get('/:projectId/my-stats', authenticateToken, async (req: Request, res: 
   }
 });
 
-// GET /api/departments/:departmentId/stats
+// GET /api/role-aware/departments/:departmentId/stats
 router.get('/departments/:departmentId/stats', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
@@ -534,7 +534,7 @@ router.get('/departments/:departmentId/stats', authenticateToken, async (req: Re
   }
 });
 
-// GET /api/departments/:departmentId/team
+// GET /api/role-aware/departments/:departmentId/team
 router.get('/departments/:departmentId/team', authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
