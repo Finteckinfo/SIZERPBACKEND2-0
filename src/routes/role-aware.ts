@@ -30,27 +30,35 @@ async function getProjectRoleContext(userId: string, projectId: string) {
   if (!project) return null;
 
   const isOwner = project.ownerId === userId;
-  const userRole = project.userRoles[0] || null;
-  const role = isOwner ? 'PROJECT_OWNER' : (userRole?.role ?? null);
+  const rolesHeld = project.userRoles.map(r => r.role);
+  const uniqueRoles = Array.from(new Set([...(isOwner ? ['PROJECT_OWNER'] : []), ...rolesHeld]));
+  const primaryRole = uniqueRoles.includes('PROJECT_OWNER')
+    ? 'PROJECT_OWNER'
+    : (uniqueRoles.includes('PROJECT_MANAGER') ? 'PROJECT_MANAGER' : (uniqueRoles.includes('EMPLOYEE') ? 'EMPLOYEE' : null));
 
   const allDeptIds = project.departments.map(d => d.id);
-  const scopeFromArray = (userRole?.departmentScope ?? []).filter(Boolean);
-  const accessibleFromRel = (userRole?.accessibleDepartments ?? []).map(d => d.id);
-  const managedFromRel = (userRole?.managedDepartments ?? []).map(d => d.id);
+  const union = (arrs: string[][]) => Array.from(new Set(arrs.flat())) as string[];
+  const scopeArrays = project.userRoles.map(r => (r.departmentScope ?? []).filter(Boolean));
+  const accessibleRelArrays = project.userRoles.map(r => (r.accessibleDepartments ?? []).map(d => d.id));
+  const managedRelArrays = project.userRoles.map(r => (r.managedDepartments ?? []).map(d => d.id));
 
-  const accessibleDepartmentIds = isOwner
-    ? allDeptIds
-    : (scopeFromArray.length > 0 ? scopeFromArray : accessibleFromRel);
+  const unionScope = union(scopeArrays);
+  const unionAccessible = union(accessibleRelArrays);
+  const unionManageable = union(managedRelArrays);
 
-  const manageableDepartmentIds = isOwner
-    ? allDeptIds
-    : managedFromRel;
+  const accessibleDepartmentIds = isOwner ? allDeptIds : (unionScope.length > 0 ? unionScope : unionAccessible);
+  const manageableDepartmentIds = isOwner ? allDeptIds : unionManageable;
 
   return {
     projectId,
     isOwner,
-    role,
-    userRoleId: userRole?.id ?? null,
+    // new multi-role shape
+    roles: uniqueRoles,
+    primaryRole,
+    userRoleIds: project.userRoles.map(r => r.id),
+    // backward-compat fields
+    role: primaryRole,
+    userRoleId: project.userRoles[0]?.id ?? null,
     allDeptIds,
     accessibleDepartmentIds,
     manageableDepartmentIds
@@ -59,7 +67,7 @@ async function getProjectRoleContext(userId: string, projectId: string) {
 
 function permissionsForRole(ctx: Awaited<ReturnType<typeof getProjectRoleContext>>) {
   const isOwner = !!ctx?.isOwner;
-  const role = ctx?.role;
+  const roles = ctx?.roles ?? [];
   const base = {
     canCreateTask: false,
     canAssignTask: false,
@@ -71,7 +79,7 @@ function permissionsForRole(ctx: Awaited<ReturnType<typeof getProjectRoleContext
     manageableDepartmentIds: ctx?.manageableDepartmentIds ?? []
   };
 
-  if (!ctx || !role) return base;
+  if (!ctx || roles.length === 0) return base;
 
   if (isOwner) {
     return {
@@ -87,7 +95,7 @@ function permissionsForRole(ctx: Awaited<ReturnType<typeof getProjectRoleContext
     };
   }
 
-  if (role === 'PROJECT_MANAGER') {
+  if (roles.includes('PROJECT_MANAGER')) {
     return {
       ...base,
       canCreateTask: (ctx.manageableDepartmentIds.length > 0),
@@ -150,10 +158,11 @@ router.get('/:projectId/my-role', authenticateToken, async (req: Request, res: R
     if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
     const ctx = await getProjectRoleContext(userId, projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     res.json({
-      role: ctx.role,
+      roles: ctx.roles,
+      primaryRole: ctx.primaryRole,
       accessibleDepartmentIds: ctx.accessibleDepartmentIds,
       manageableDepartmentIds: ctx.manageableDepartmentIds
     });
@@ -171,7 +180,7 @@ router.get('/:projectId/permissions', authenticateToken, async (req: Request, re
     if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
     const ctx = await getProjectRoleContext(userId, projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     const perms = permissionsForRole(ctx);
     res.json(perms);
@@ -190,7 +199,7 @@ router.post('/access/check', authenticateToken, async (req: Request, res: Respon
     if (!projectId || !action) return res.status(400).json({ error: 'projectId and action are required' });
 
     const ctx = await getProjectRoleContext(userId, projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     const result = checkAction(ctx, action, { departmentId, taskId });
     res.json(result);
@@ -208,7 +217,7 @@ router.get('/:projectId/departments/accessible', authenticateToken, async (req: 
     if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
     const ctx = await getProjectRoleContext(userId, projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     const visibleIds = ctx.isOwner ? ctx.allDeptIds : ctx.accessibleDepartmentIds;
     const manageableIds = ctx.isOwner ? ctx.allDeptIds : ctx.manageableDepartmentIds;
@@ -242,7 +251,7 @@ router.get('/:projectId/tasks', authenticateToken, async (req: Request, res: Res
     if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
     const ctx = await getProjectRoleContext(userId, projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     const pageNum = parseInt(String(page)) || 1;
     const limitNum = Math.min(parseInt(String(limit)) || 20, 100);
@@ -250,7 +259,7 @@ router.get('/:projectId/tasks', authenticateToken, async (req: Request, res: Res
 
     let visibleDeptIds = ctx.isOwner ? ctx.allDeptIds : ctx.accessibleDepartmentIds;
 
-    if (ctx.role === 'PROJECT_MANAGER' && ctx.manageableDepartmentIds.length > 0) {
+    if ((ctx.roles ?? []).includes('PROJECT_MANAGER') && ctx.manageableDepartmentIds.length > 0) {
       // Managers default to manageable depts for scope=department
       if (scope === 'department' && !departmentId) {
         visibleDeptIds = ctx.manageableDepartmentIds;
@@ -276,7 +285,13 @@ router.get('/:projectId/tasks', authenticateToken, async (req: Request, res: Res
       ];
     }
 
-    if (scope === 'assigned_to_me') {
+    const isOwner = ctx.isOwner;
+    const isManager = (ctx.roles ?? []).includes('PROJECT_MANAGER');
+    const isEmployee = (ctx.roles ?? []).includes('EMPLOYEE');
+
+    if (isOwner) {
+      // all tasks already scoped by visibleDeptIds
+    } else if (scope === 'assigned_to_me' || (!isManager && isEmployee)) {
       // Tasks assigned to caller's role within this project
       const roles = await prisma.userRole.findMany({ where: { userId, projectId }, select: { id: true } });
       const roleIds = roles.map(r => r.id);
@@ -318,9 +333,9 @@ router.get('/:projectId/tasks', authenticateToken, async (req: Request, res: Res
       return {
         ...t,
         canView: true,
-        canEdit: ctx.isOwner || (ctx.role === 'PROJECT_MANAGER' && inManageable),
-        canAssign: ctx.isOwner || (ctx.role === 'PROJECT_MANAGER' && inManageable),
-        canReport: ctx.role === 'EMPLOYEE'
+        canEdit: ctx.isOwner || (((ctx.roles ?? []).includes('PROJECT_MANAGER')) && inManageable),
+        canAssign: ctx.isOwner || (((ctx.roles ?? []).includes('PROJECT_MANAGER')) && inManageable),
+        canReport: (ctx.roles ?? []).includes('EMPLOYEE')
       };
     });
 
@@ -347,7 +362,7 @@ router.get('/:projectId/team/accessible', authenticateToken, async (req: Request
     if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
     const ctx = await getProjectRoleContext(userId, projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     // Owners: all; Managers: members in manageable depts; Employees: themselves
     const roles = await prisma.userRole.findMany({
@@ -362,7 +377,7 @@ router.get('/:projectId/team/accessible', authenticateToken, async (req: Request
 
     let filtered = roles;
     if (!ctx.isOwner) {
-      if (ctx.role === 'PROJECT_MANAGER') {
+      if ((ctx.roles ?? []).includes('PROJECT_MANAGER')) {
         const set = new Set(ctx.manageableDepartmentIds);
         filtered = roles.filter(r => (r.departmentScope ?? []).some((d: string) => set.has(d)) || r.role === 'PROJECT_OWNER');
       } else {
@@ -500,7 +515,7 @@ router.get('/departments/:departmentId/stats', authenticateToken, async (req: Re
     if (!department) return res.status(404).json({ error: 'Department not found' });
 
     const ctx = await getProjectRoleContext(userId, department.projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     const allowed = ctx.isOwner || ctx.manageableDepartmentIds.includes(departmentId) || ctx.accessibleDepartmentIds.includes(departmentId);
     if (!allowed) return res.status(403).json({ error: 'Department out of scope' });
@@ -530,7 +545,7 @@ router.get('/departments/:departmentId/team', authenticateToken, async (req: Req
     if (!department) return res.status(404).json({ error: 'Department not found' });
 
     const ctx = await getProjectRoleContext(userId, department.projectId);
-    if (!ctx || !ctx.role) return res.status(403).json({ error: 'No access to this project' });
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
 
     let roles = await prisma.userRole.findMany({
       where: { projectId: department.projectId },
