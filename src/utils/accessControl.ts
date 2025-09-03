@@ -41,24 +41,22 @@ export async function checkProjectAccess(userId: string, projectId: string): Pro
     // Check if user is the owner
     const isOwner = project.ownerId === userId;
     
-    // Check if user has a role in the project
-    const userRole = project.userRoles[0];
+    // Use union-based multi-role logic
+    const rolesHeld = project.userRoles.map(r => r.role);
+    const uniqueRoles = Array.from(new Set([...(isOwner ? ['PROJECT_OWNER'] : []), ...rolesHeld]));
+    const primaryRole = uniqueRoles.includes('PROJECT_OWNER')
+      ? 'PROJECT_OWNER'
+      : (uniqueRoles.includes('PROJECT_MANAGER') ? 'PROJECT_MANAGER' : (uniqueRoles.includes('EMPLOYEE') ? 'EMPLOYEE' : null));
 
-    if (isOwner) {
+    // Check if user has any active roles
+    const hasActiveRole = project.userRoles.some(role => role.status === 'ACTIVE');
+
+    if (isOwner || hasActiveRole) {
       return {
         hasAccess: true,
-        role: 'PROJECT_OWNER',
-        userRoleId: userRole?.id || null,
-        isOwner: true
-      };
-    }
-
-    if (userRole && userRole.status === 'ACTIVE') {
-      return {
-        hasAccess: true,
-        role: userRole.role,
-        userRoleId: userRole.id,
-        isOwner: false
+        role: primaryRole,
+        userRoleId: project.userRoles[0]?.id || null,
+        isOwner: isOwner
       };
     }
 
