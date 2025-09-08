@@ -247,7 +247,21 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
   try {
     const userId = req.user?.id;
     const { projectId } = req.params;
-    const { scope = 'all', departmentId, status, priority, search, page = '1', limit = '20' } = req.query as any;
+    const {
+      scope = 'all',
+      departmentId,
+      userRoleId,
+      status,
+      priority,
+      dateFrom,
+      dateTo,
+      search,
+      page = '1',
+      limit = '20',
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      fields
+    } = req.query as any;
     if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
     const ctx = await getProjectRoleContext(userId, projectId);
@@ -272,12 +286,21 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
       if (!allowed) return res.status(403).json({ error: 'Department out of scope' });
     }
 
-    const where: any = {
-      department: { projectId }
-    };
+    const where: any = { department: { projectId } };
 
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
+    // status/priority can be single or comma-separated
+    const normalizeList = (v: any) => Array.isArray(v) ? v : (typeof v === 'string' && v.includes(',') ? v.split(',').map((s: string) => s.trim()) : v);
+    const statusFilter = normalizeList(status);
+    const priorityFilter = normalizeList(priority);
+    if (statusFilter) where.status = Array.isArray(statusFilter) ? { in: statusFilter } : statusFilter;
+    if (priorityFilter) where.priority = Array.isArray(priorityFilter) ? { in: priorityFilter } : priorityFilter;
+
+    // date range (using createdAt as date proxy for now; will map to dueDate when available)
+    if (dateFrom || dateTo) {
+      where.createdAt = {};
+      if (dateFrom) (where.createdAt as any).gte = new Date(String(dateFrom));
+      if (dateTo) (where.createdAt as any).lte = new Date(String(dateTo));
+    }
     if (search) {
       where.OR = [
         { title: { contains: String(search), mode: 'insensitive' } },
@@ -296,16 +319,52 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
       const roles = await prisma.userRole.findMany({ where: { userId, projectId }, select: { id: true } });
       const roleIds = roles.map(r => r.id);
       where.assignedRoleId = { in: roleIds };
-    } else if (departmentId) {
+    } else if (scope === 'user' && userRoleId) {
+      // Owner can filter any userRole in project
+      if (isOwner) {
+        where.assignedRoleId = userRoleId;
+      } else if (isManager) {
+        // Manager: only users inside manageable departments
+        const targetRole = await prisma.userRole.findFirst({ where: { id: String(userRoleId), projectId }, select: { departmentScope: true } });
+        const targetDepts = new Set((targetRole?.departmentScope ?? []) as string[]);
+        const allowed = ctx.manageableDepartmentIds.some(d => targetDepts.has(d));
+        if (allowed) {
+          where.assignedRoleId = userRoleId;
+        }
+        // else silently ignore out-of-scope user filter
+      }
+    } 
+
+    if (departmentId) {
       where.departmentId = String(departmentId);
     } else {
       where.departmentId = { in: visibleDeptIds };
     }
 
+    // Sorting
+    const orderBy: any = {};
+    const normalizedSortBy = String(sortBy);
+    if (normalizedSortBy === 'priority') {
+      orderBy.priority = String(sortOrder) === 'asc' ? 'asc' : 'desc';
+    } else {
+      // default to createdAt; 'dueDate' is reserved and currently maps to createdAt
+      orderBy.createdAt = String(sortOrder) === 'asc' ? 'asc' : 'desc';
+    }
+
+    const minimal = String(fields || '') === 'minimal';
+
     const [tasks, total] = await Promise.all([
       prisma.task.findMany({
         where,
-        select: {
+        select: minimal ? {
+          id: true,
+          title: true,
+          status: true,
+          priority: true,
+          departmentId: true,
+          assignedRoleId: true,
+          createdAt: true
+        } : {
           id: true,
           title: true,
           description: true,
@@ -323,7 +382,7 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
         },
         skip: offset,
         take: limitNum,
-        orderBy: { createdAt: 'desc' }
+        orderBy
       }),
       prisma.task.count({ where })
     ]);
@@ -351,6 +410,111 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
   } catch (e) {
     console.error('[RoleAware] project tasks error:', e);
     res.status(500).json({ error: 'Failed to fetch tasks' });
+  }
+});
+
+// Calendar aggregation endpoint
+router.get('/projects/:projectId/tasks/calendar', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { projectId } = req.params;
+    const {
+      start,
+      end,
+      granularity = 'day',
+      scope = 'all',
+      departmentId,
+      userRoleId,
+      status,
+      priority
+    } = req.query as any;
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
+    if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+
+    const ctx = await getProjectRoleContext(userId, projectId);
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
+
+    let visibleDeptIds = ctx.isOwner ? ctx.allDeptIds : ctx.accessibleDepartmentIds;
+    if ((ctx.roles ?? []).includes('PROJECT_MANAGER') && ctx.manageableDepartmentIds.length > 0) {
+      if (scope === 'department' && !departmentId) {
+        visibleDeptIds = ctx.manageableDepartmentIds;
+      }
+    }
+
+    if (departmentId) {
+      const allowed = ctx.isOwner ? ctx.allDeptIds.includes(String(departmentId)) : visibleDeptIds.includes(String(departmentId));
+      if (!allowed) return res.status(403).json({ error: 'Department out of scope' });
+    }
+
+    const where: any = { department: { projectId } };
+    const normalizeList = (v: any) => Array.isArray(v) ? v : (typeof v === 'string' && v.includes(',') ? v.split(',').map((s: string) => s.trim()) : v);
+    const statusFilter = normalizeList(status);
+    const priorityFilter = normalizeList(priority);
+    if (statusFilter) where.status = Array.isArray(statusFilter) ? { in: statusFilter } : statusFilter;
+    if (priorityFilter) where.priority = Array.isArray(priorityFilter) ? { in: priorityFilter } : priorityFilter;
+    where.createdAt = { gte: new Date(String(start)), lte: new Date(String(end)) };
+
+    const isOwner = ctx.isOwner;
+    const isManager = (ctx.roles ?? []).includes('PROJECT_MANAGER');
+    const isEmployee = (ctx.roles ?? []).includes('EMPLOYEE');
+
+    if (isOwner) {
+      // all tasks already scoped
+    } else if (scope === 'assigned_to_me' || (!isManager && isEmployee)) {
+      const roles = await prisma.userRole.findMany({ where: { userId, projectId }, select: { id: true } });
+      const roleIds = roles.map(r => r.id);
+      where.assignedRoleId = { in: roleIds };
+    } else if (scope === 'user' && userRoleId) {
+      if (isOwner) {
+        where.assignedRoleId = userRoleId;
+      } else if (isManager) {
+        const targetRole = await prisma.userRole.findFirst({ where: { id: String(userRoleId), projectId }, select: { departmentScope: true } });
+        const targetDepts = new Set((targetRole?.departmentScope ?? []) as string[]);
+        const allowed = ctx.manageableDepartmentIds.some(d => targetDepts.has(d));
+        if (allowed) where.assignedRoleId = userRoleId;
+      }
+    }
+
+    if (departmentId) where.departmentId = String(departmentId); else where.departmentId = { in: visibleDeptIds };
+
+    const tasks = await prisma.task.findMany({ where, select: { id: true, status: true, createdAt: true } });
+
+    // Aggregate by day/week
+    const fmtDate = (d: Date) => {
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    const bucketsMap = new Map<string, { total: number; pending: number; inProgress: number; completed: number; approved: number }>();
+    const toBucketKey = (dt: Date) => {
+      if (granularity === 'week') {
+        // ISO week: Monday
+        const d = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate()));
+        const day = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() - (day - 1));
+        return fmtDate(d);
+      }
+      return fmtDate(dt);
+    };
+
+    for (const t of tasks) {
+      const key = toBucketKey(new Date(t.createdAt));
+      if (!bucketsMap.has(key)) bucketsMap.set(key, { total: 0, pending: 0, inProgress: 0, completed: 0, approved: 0 });
+      const b = bucketsMap.get(key)!;
+      b.total += 1;
+      if (t.status === 'PENDING') b.pending += 1;
+      else if (t.status === 'IN_PROGRESS') b.inProgress += 1;
+      else if (t.status === 'COMPLETED') b.completed += 1;
+      else if (t.status === 'APPROVED') b.approved += 1;
+    }
+
+    const buckets = Array.from(bucketsMap.entries()).sort((a, b) => a[0] < b[0] ? -1 : 1).map(([date, counts]) => ({ date, counts }));
+    res.json({ buckets });
+  } catch (e) {
+    console.error('[RoleAware] project tasks calendar error:', e);
+    res.status(500).json({ error: 'Failed to fetch calendar data' });
   }
 });
 
