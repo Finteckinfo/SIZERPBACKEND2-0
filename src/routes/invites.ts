@@ -120,18 +120,33 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
 
     // req.user is guaranteed to exist after authenticateToken middleware
 
-    const userRole = await prisma.userRole.findFirst({
+    // Fetch all roles the inviter holds in this project (support multi-role)
+    const inviterRoles = await prisma.userRole.findMany({
       where: {
         userId: req.user!.id,
-        projectId: projectId,
-        role: {
-          in: ['PROJECT_OWNER', 'PROJECT_MANAGER']
-        }
-      }
+        projectId: projectId
+      },
+      select: { role: true }
     });
 
-    if (!userRole) {
+    const isOwner = inviterRoles.some(r => r.role === 'PROJECT_OWNER');
+    const isManager = inviterRoles.some(r => r.role === 'PROJECT_MANAGER');
+
+    if (!isOwner && !isManager) {
       return res.status(403).json({ error: 'Insufficient permissions to invite users' });
+    }
+
+    // Enforce invite target role policy:
+    // - PROJECT_OWNER can invite PROJECT_MANAGER and EMPLOYEE
+    // - PROJECT_MANAGER can invite only EMPLOYEE (cannot invite OWNER or MANAGER)
+    if (isOwner) {
+      if (!(role === 'PROJECT_MANAGER' || role === 'EMPLOYEE')) {
+        return res.status(403).json({ error: 'Project owners may invite only PROJECT_MANAGER or EMPLOYEE roles' });
+      }
+    } else if (isManager) {
+      if (role !== 'EMPLOYEE') {
+        return res.status(403).json({ error: 'Project managers may invite only EMPLOYEE roles' });
+      }
     }
 
     // Check if user already exists (optional - invites can be sent to non-existent users)

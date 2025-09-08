@@ -239,14 +239,12 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
       where: {
         userId: req.user!.id,
         projectId: projectId,
-        role: {
-          in: ['PROJECT_OWNER', 'PROJECT_MANAGER']
-        }
+        role: 'PROJECT_OWNER'
       }
     });
 
     if (!userRole) {
-      return res.status(403).json({ error: 'Insufficient permissions to create departments' });
+      return res.status(403).json({ error: 'Only project owners can create departments' });
     }
 
     const department = await prisma.department.create({
