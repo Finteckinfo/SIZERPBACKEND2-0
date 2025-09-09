@@ -565,6 +565,443 @@ router.get('/projects/:projectId/team/accessible', authenticateToken, async (req
 export default router;
 // ---- Additional role-aware endpoints ----
 
+// ---- Cross-project: My Tasks (role-aware across all accessible projects) ----
+// GET /api/role-aware/my-tasks
+router.get('/my-tasks', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
+
+    // Parse query params
+    const {
+      scope,
+      projectId: projectIdRaw,
+      departmentId: departmentIdRaw,
+      userRoleId,
+      status,
+      priority,
+      dateFrom,
+      dateTo,
+      search,
+      fields,
+      page = '1',
+      limit = '20',
+      sortBy = 'dueDate',
+      sortOrder = 'asc'
+    } = req.query as any;
+
+    // Helpers to normalize arrays/CSV
+    const normalizeMulti = (v: any): string[] | undefined => {
+      if (!v) return undefined;
+      if (Array.isArray(v)) return v.flatMap(x => String(x).split(',').map(s => s.trim()).filter(Boolean));
+      if (typeof v === 'string') return v.split(',').map(s => s.trim()).filter(Boolean);
+      return undefined;
+    };
+    const normalizeList = (v: any) => Array.isArray(v) ? v : (typeof v === 'string' && v.includes(',') ? v.split(',').map((s: string) => s.trim()) : v);
+
+    const requestedProjectIds = normalizeMulti(projectIdRaw);
+    const requestedDepartmentIds = normalizeMulti(departmentIdRaw);
+    const statusFilter = normalizeList(status);
+    const priorityFilter = normalizeList(priority);
+
+    const pageNum = parseInt(String(page)) || 1;
+    const limitNum = Math.min(parseInt(String(limit)) || 20, 100);
+    const offset = (pageNum - 1) * limitNum;
+
+    // Fetch all projects where user has any role or ownership
+    const [ownedProjects, roles] = await Promise.all([
+      prisma.project.findMany({ where: { ownerId: userId }, select: { id: true } }),
+      prisma.userRole.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          role: true,
+          status: true,
+          projectId: true,
+          departmentScope: true,
+          managedDepartments: { select: { id: true } },
+          accessibleDepartments: { select: { id: true } }
+        }
+      })
+    ]);
+
+    const ownerProjectSet = new Set(ownedProjects.map(p => p.id));
+    const activeRoles = roles.filter(r => r.status === 'ACTIVE' || r.status === 'PENDING');
+    const roleProjectIds = Array.from(new Set(activeRoles.map(r => r.projectId)));
+
+    // Determine overall caller capabilities
+    const holdsOwnerAnywhere = ownerProjectSet.size > 0;
+    const holdsManagerAnywhere = activeRoles.some(r => r.role === 'PROJECT_MANAGER');
+    const holdsEmployeeAnywhere = activeRoles.some(r => r.role === 'EMPLOYEE');
+
+    // Compute accessible projects depending on role
+    let accessibleProjectIds = new Set<string>([...ownerProjectSet, ...roleProjectIds]);
+    if (requestedProjectIds && requestedProjectIds.length > 0) {
+      // Intersect with requested subset
+      accessibleProjectIds = new Set(requestedProjectIds.filter(id => accessibleProjectIds.has(id)));
+    }
+    if (accessibleProjectIds.size === 0) return res.status(403).json({ error: 'No access to any requested scope' });
+
+    // Build department visibility maps per project for manager/employee
+    const projectToManageableDepts = new Map<string, Set<string>>();
+    const projectToAccessibleDepts = new Map<string, Set<string>>();
+    const myRoleIdsPerProject = new Map<string, string[]>();
+
+    for (const r of activeRoles) {
+      const manageable = new Set<string>(r.managedDepartments?.map(d => d.id) ?? []);
+      const accessible = new Set<string>([...(r.departmentScope ?? []), ...(r.accessibleDepartments?.map(d => d.id) ?? [])]);
+      if (!projectToManageableDepts.has(r.projectId)) projectToManageableDepts.set(r.projectId, new Set());
+      if (!projectToAccessibleDepts.has(r.projectId)) projectToAccessibleDepts.set(r.projectId, new Set());
+      const man = projectToManageableDepts.get(r.projectId)!;
+      const acc = projectToAccessibleDepts.get(r.projectId)!;
+      manageable.forEach(d => man.add(d));
+      accessible.forEach(d => acc.add(d));
+      if (!myRoleIdsPerProject.has(r.projectId)) myRoleIdsPerProject.set(r.projectId, []);
+      myRoleIdsPerProject.get(r.projectId)!.push(r.id);
+    }
+
+    // Employees: enforce scope=assigned_to_me and disallow departmentId/userRoleId
+    const isOnlyEmployee = !holdsOwnerAnywhere && !holdsManagerAnywhere && holdsEmployeeAnywhere;
+    const requestedScope = String(scope || '').trim();
+    if (isOnlyEmployee) {
+      if (userRoleId || (requestedDepartmentIds && requestedDepartmentIds.length > 0)) {
+        return res.status(400).json({ error: 'Employees cannot filter by userRoleId or departmentId' });
+      }
+    }
+
+    // Build where clause across projects
+    const where: any = { department: { projectId: { in: Array.from(accessibleProjectIds) } } };
+
+    // Apply role-based scope
+    if (holdsOwnerAnywhere) {
+      // Owners can see all tasks in their owned projects, plus tasks in other projects where they also hold a role
+      // where already limited to accessibleProjectIds
+    }
+
+    if (holdsManagerAnywhere && !holdsOwnerAnywhere) {
+      // Managers limited to manageable departments per project
+      // If departmentId filter provided, intersect with manageable sets
+      // Else, apply union of manageable per project
+      const deptFilters: string[] = [];
+      for (const pid of accessibleProjectIds) {
+        const set = projectToManageableDepts.get(pid) ?? new Set<string>();
+        set.forEach(d => deptFilters.push(d));
+      }
+      if (deptFilters.length === 0) {
+        // No manageable departments at all
+        return res.json({ tasks: [], pagination: { page: pageNum, limit: limitNum, total: 0, totalPages: 0 } });
+      }
+      where.departmentId = { in: deptFilters };
+    }
+
+    if (isOnlyEmployee) {
+      // Employees only tasks assigned to their roles across projects
+      const myRoleIds = activeRoles.map(r => r.id);
+      where.assignedRoleId = { in: myRoleIds };
+    }
+
+    // Filters: departmentId for owner/manager only, intersect with visibility
+    if (!isOnlyEmployee && requestedDepartmentIds && requestedDepartmentIds.length > 0) {
+      const allowedDeptIds = new Set<string>();
+      for (const pid of accessibleProjectIds) {
+        if (ownerProjectSet.has(pid)) {
+          // owner sees all depts in owned project; fetch depts later implicitly
+          // allow requested depts; owner restriction will be validated by project membership
+          requestedDepartmentIds.forEach(d => allowedDeptIds.add(d));
+        } else {
+          const man = projectToManageableDepts.get(pid) ?? new Set<string>();
+          const acc = projectToAccessibleDepts.get(pid) ?? new Set<string>();
+          requestedDepartmentIds.forEach(d => { if (man.has(d) || acc.has(d)) allowedDeptIds.add(d); });
+        }
+      }
+      if (allowedDeptIds.size > 0) {
+        where.departmentId = where.departmentId?.in ? { in: Array.from(new Set([...(where.departmentId.in as string[]), ...allowedDeptIds])) } : { in: Array.from(allowedDeptIds) };
+      }
+    }
+
+    // scope=user filter (owner/manager only)
+    if (!isOnlyEmployee && String(requestedScope) === 'user' && userRoleId) {
+      // Ensure userRoleId is within accessible scope
+      const target = activeRoles.find(r => r.id === String(userRoleId));
+      if (target) {
+        if (holdsOwnerAnywhere && ownerProjectSet.has(target.projectId)) {
+          where.assignedRoleId = userRoleId;
+        } else if (holdsManagerAnywhere) {
+          const man = projectToManageableDepts.get(target.projectId) ?? new Set<string>();
+          const targetDepts = new Set((target.departmentScope ?? []) as string[]);
+          const overlap = Array.from(targetDepts).some(d => man.has(d));
+          if (overlap) where.assignedRoleId = userRoleId;
+        }
+      }
+    }
+
+    // status/priority filters
+    if (statusFilter) where.status = Array.isArray(statusFilter) ? { in: statusFilter } : statusFilter;
+    if (priorityFilter) where.priority = Array.isArray(priorityFilter) ? { in: priorityFilter } : priorityFilter;
+
+    // Dates: currently use createdAt as a proxy (until dueDate/startDate fields exist)
+    if (dateFrom || dateTo) {
+      where.createdAt = {};
+      if (dateFrom) (where.createdAt as any).gte = new Date(String(dateFrom));
+      if (dateTo) (where.createdAt as any).lte = new Date(String(dateTo));
+      if (isNaN((where.createdAt as any).gte?.getTime?.() ?? Date.now()) || isNaN((where.createdAt as any).lte?.getTime?.() ?? Date.now())) {
+        return res.status(400).json({ error: 'Invalid date range' });
+      }
+    }
+
+    // Search
+    if (search) {
+      where.OR = [
+        { title: { contains: String(search), mode: 'insensitive' } },
+        { description: { contains: String(search), mode: 'insensitive' } }
+      ];
+    }
+
+    // Sorting
+    const orderBy: any = {};
+    const normalizedSortBy = String(sortBy);
+    const normalizedSortOrder = String(sortOrder) === 'desc' ? 'desc' : 'asc';
+    if (normalizedSortBy === 'priority') orderBy.priority = normalizedSortOrder;
+    else if (normalizedSortBy === 'title') orderBy.title = normalizedSortOrder;
+    else if (normalizedSortBy === 'createdAt') orderBy.createdAt = normalizedSortOrder;
+    else /* dueDate default */ orderBy.createdAt = normalizedSortOrder;
+
+    const minimal = String(fields || '') === 'minimal';
+
+    const [tasks, total] = await Promise.all([
+      prisma.task.findMany({
+        where,
+        select: minimal ? {
+          id: true,
+          title: true,
+          status: true,
+          priority: true,
+          departmentId: true,
+          // expose projectId via relation select
+          department: { select: { id: true, name: true, projectId: true } },
+          assignedRoleId: true,
+          createdAt: true,
+          updatedAt: true
+        } : {
+          id: true,
+          title: true,
+          description: true,
+          status: true,
+          priority: true,
+          departmentId: true,
+          department: { select: { id: true, name: true, projectId: true } },
+          createdAt: true,
+          updatedAt: true,
+          assignedRole: {
+            select: {
+              id: true,
+              role: true,
+              user: { select: { id: true, email: true, firstName: true, lastName: true } }
+            }
+          }
+        },
+        skip: offset,
+        take: limitNum,
+        orderBy
+      }),
+      prisma.task.count({ where })
+    ]);
+
+    const items = tasks.map((t: any) => {
+      const pid = t.department?.projectId;
+      const manageable = ownerProjectSet.has(pid) || (projectToManageableDepts.get(pid)?.has(t.departmentId) ?? false);
+      return {
+        ...t,
+        projectId: pid,
+        canView: true,
+        canEdit: ownerProjectSet.has(pid) || manageable,
+        canAssign: ownerProjectSet.has(pid) || manageable,
+        canReport: holdsEmployeeAnywhere
+      };
+    });
+
+    res.json({
+      tasks: items,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (e) {
+    console.error('[RoleAware] my-tasks error:', e);
+    res.status(500).json({ error: 'Failed to fetch my tasks' });
+  }
+});
+
+// GET /api/role-aware/my-tasks/calendar
+router.get('/my-tasks/calendar', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
+
+    const {
+      start,
+      end,
+      granularity = 'day',
+      scope,
+      projectId: projectIdRaw,
+      departmentId: departmentIdRaw,
+      userRoleId,
+      status,
+      priority,
+      search
+    } = req.query as any;
+    if (!start || !end) return res.status(400).json({ error: 'start and end are required' });
+
+    const normalizeMulti = (v: any): string[] | undefined => {
+      if (!v) return undefined;
+      if (Array.isArray(v)) return v.flatMap(x => String(x).split(',').map(s => s.trim()).filter(Boolean));
+      if (typeof v === 'string') return v.split(',').map(s => s.trim()).filter(Boolean);
+      return undefined;
+    };
+    const normalizeList = (v: any) => Array.isArray(v) ? v : (typeof v === 'string' && v.includes(',') ? v.split(',').map((s: string) => s.trim()) : v);
+
+    const requestedProjectIds = normalizeMulti(projectIdRaw);
+    const requestedDepartmentIds = normalizeMulti(departmentIdRaw);
+    const statusFilter = normalizeList(status);
+    const priorityFilter = normalizeList(priority);
+
+    // Fetch roles and owned projects
+    const [ownedProjects, roles] = await Promise.all([
+      prisma.project.findMany({ where: { ownerId: userId }, select: { id: true } }),
+      prisma.userRole.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          role: true,
+          status: true,
+          projectId: true,
+          departmentScope: true,
+          managedDepartments: { select: { id: true } },
+          accessibleDepartments: { select: { id: true } }
+        }
+      })
+    ]);
+
+    const ownerProjectSet = new Set(ownedProjects.map(p => p.id));
+    const activeRoles = roles.filter(r => r.status === 'ACTIVE' || r.status === 'PENDING');
+    const roleProjectIds = Array.from(new Set(activeRoles.map(r => r.projectId)));
+    let accessibleProjectIds = new Set<string>([...ownerProjectSet, ...roleProjectIds]);
+    if (requestedProjectIds && requestedProjectIds.length > 0) {
+      accessibleProjectIds = new Set(requestedProjectIds.filter(id => accessibleProjectIds.has(id)));
+    }
+    if (accessibleProjectIds.size === 0) return res.status(403).json({ error: 'No access to any requested scope' });
+
+    const holdsOwnerAnywhere = ownerProjectSet.size > 0;
+    const holdsManagerAnywhere = activeRoles.some(r => r.role === 'PROJECT_MANAGER');
+    const holdsEmployeeAnywhere = activeRoles.some(r => r.role === 'EMPLOYEE');
+
+    const projectToManageableDepts = new Map<string, Set<string>>();
+    const projectToAccessibleDepts = new Map<string, Set<string>>();
+    for (const r of activeRoles) {
+      const manageable = new Set<string>(r.managedDepartments?.map(d => d.id) ?? []);
+      const accessible = new Set<string>([...(r.departmentScope ?? []), ...(r.accessibleDepartments?.map(d => d.id) ?? [])]);
+      if (!projectToManageableDepts.has(r.projectId)) projectToManageableDepts.set(r.projectId, new Set());
+      if (!projectToAccessibleDepts.has(r.projectId)) projectToAccessibleDepts.set(r.projectId, new Set());
+      manageable.forEach(d => projectToManageableDepts.get(r.projectId)!.add(d));
+      accessible.forEach(d => projectToAccessibleDepts.get(r.projectId)!.add(d));
+    }
+
+    const isOnlyEmployee = !holdsOwnerAnywhere && !holdsManagerAnywhere && holdsEmployeeAnywhere;
+    if (isOnlyEmployee) {
+      if (userRoleId || (requestedDepartmentIds && requestedDepartmentIds.length > 0)) {
+        return res.status(400).json({ error: 'Employees cannot filter by userRoleId or departmentId' });
+      }
+    }
+
+    const where: any = {
+      department: { projectId: { in: Array.from(accessibleProjectIds) } },
+      createdAt: { gte: new Date(String(start)), lte: new Date(String(end)) }
+    };
+    if (isNaN((where.createdAt as any).gte.getTime()) || isNaN((where.createdAt as any).lte.getTime())) {
+      return res.status(400).json({ error: 'Invalid date range' });
+    }
+
+    if (holdsManagerAnywhere && !holdsOwnerAnywhere) {
+      const deptFilters: string[] = [];
+      for (const pid of accessibleProjectIds) {
+        const set = projectToManageableDepts.get(pid) ?? new Set<string>();
+        set.forEach(d => deptFilters.push(d));
+      }
+      if (deptFilters.length === 0) return res.json({ buckets: [], meta: { start, end, granularity } });
+      where.departmentId = { in: deptFilters };
+    }
+
+    if (isOnlyEmployee) {
+      const myRoleIds = activeRoles.map(r => r.id);
+      where.assignedRoleId = { in: myRoleIds };
+    }
+
+    if (!isOnlyEmployee && requestedDepartmentIds && requestedDepartmentIds.length > 0) {
+      const allowedDeptIds = new Set<string>();
+      for (const pid of accessibleProjectIds) {
+        if (ownerProjectSet.has(pid)) {
+          requestedDepartmentIds.forEach(d => allowedDeptIds.add(d));
+        } else {
+          const man = projectToManageableDepts.get(pid) ?? new Set<string>();
+          const acc = projectToAccessibleDepts.get(pid) ?? new Set<string>();
+          requestedDepartmentIds.forEach(d => { if (man.has(d) || acc.has(d)) allowedDeptIds.add(d); });
+        }
+      }
+      if (allowedDeptIds.size > 0) where.departmentId = { in: Array.from(allowedDeptIds) };
+    }
+
+    if (!isOnlyEmployee && String(scope || '') === 'user' && userRoleId) {
+      const target = activeRoles.find(r => r.id === String(userRoleId));
+      if (target) {
+        if (holdsOwnerAnywhere && ownerProjectSet.has(target.projectId)) {
+          where.assignedRoleId = userRoleId;
+        } else if (holdsManagerAnywhere) {
+          const man = projectToManageableDepts.get(target.projectId) ?? new Set<string>();
+          const targetDepts = new Set((target.departmentScope ?? []) as string[]);
+          const overlap = Array.from(targetDepts).some(d => man.has(d));
+          if (overlap) where.assignedRoleId = userRoleId;
+        }
+      }
+    }
+
+    if (statusFilter) where.status = Array.isArray(statusFilter) ? { in: statusFilter } : statusFilter;
+    if (priorityFilter) where.priority = Array.isArray(priorityFilter) ? { in: priorityFilter } : priorityFilter;
+    if (search) where.OR = [ { title: { contains: String(search), mode: 'insensitive' } }, { description: { contains: String(search), mode: 'insensitive' } } ];
+
+    const tasks = await prisma.task.findMany({ where, select: { id: true, status: true, createdAt: true } });
+
+    const fmtDate = (d: Date) => {
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+    const toBucketKey = (dt: Date) => {
+      if (granularity === 'week') {
+        const d = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate()));
+        const day = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() - (day - 1));
+        return fmtDate(d);
+      }
+      return fmtDate(dt);
+    };
+
+    const bucketsMap = new Map<string, number>();
+    for (const t of tasks) {
+      const key = toBucketKey(new Date(t.createdAt));
+      bucketsMap.set(key, (bucketsMap.get(key) ?? 0) + 1);
+    }
+    const buckets = Array.from(bucketsMap.entries()).sort((a, b) => a[0] < b[0] ? -1 : 1).map(([date, count]) => ({ date, count }));
+    res.json({ buckets, meta: { start, end, granularity } });
+  } catch (e) {
+    console.error('[RoleAware] my-tasks calendar error:', e);
+    res.status(500).json({ error: 'Failed to fetch calendar data' });
+  }
+});
+
 // GET /api/role-aware/projects/:projectId/overview
 router.get('/projects/:projectId/overview', authenticateToken, async (req: Request, res: Response) => {
   try {
