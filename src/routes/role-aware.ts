@@ -586,6 +586,93 @@ router.get('/projects/:projectId/team/accessible', authenticateToken, async (req
   }
 });
 
+// POST /api/role-aware/projects/:projectId/tasks - Create task (role-aware)
+router.post('/projects/:projectId/tasks', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { projectId } = req.params;
+    const { title, description, departmentId, assignedRoleId, priority, startDate, dueDate, endDate, isAllDay, timeZone, progress, checklistCount, checklistCompleted } = req.body;
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
+    if (!title || !departmentId) return res.status(400).json({ error: 'title and departmentId are required' });
+
+    const ctx = await getProjectRoleContext(userId, projectId);
+    if (!ctx || (ctx.roles ?? []).length === 0) return res.status(403).json({ error: 'No access to this project' });
+
+    // Verify department belongs to project and user has access
+    const department = await prisma.department.findFirst({
+      where: { id: departmentId, projectId },
+      select: { id: true, name: true }
+    });
+    if (!department) return res.status(404).json({ error: 'Department not found in this project' });
+
+    // Check if user can create tasks in this department
+    const canCreate = ctx.isOwner || (ctx.manageableDepartmentIds.includes(departmentId));
+    if (!canCreate) return res.status(403).json({ error: 'No permission to create tasks in this department' });
+
+    // Verify assignedRoleId belongs to project if provided
+    if (assignedRoleId) {
+      const targetRole = await prisma.userRole.findFirst({
+        where: { id: assignedRoleId, projectId },
+        select: { id: true, departmentScope: true }
+      });
+      if (!targetRole) return res.status(404).json({ error: 'Assigned role not found in this project' });
+      
+      // For managers, ensure assigned role is in their scope
+      if (!ctx.isOwner && ctx.manageableDepartmentIds.length > 0) {
+        const targetDepts = new Set((targetRole.departmentScope ?? []) as string[]);
+        const hasOverlap = ctx.manageableDepartmentIds.some(d => targetDepts.has(d));
+        if (!hasOverlap) return res.status(403).json({ error: 'Cannot assign to role outside your manageable departments' });
+      }
+    }
+
+    // Get the user's role for createdByRoleId
+    const userRole = await prisma.userRole.findFirst({
+      where: { userId, projectId, status: 'ACTIVE' },
+      select: { id: true }
+    });
+
+    const task = await prisma.task.create({
+      data: {
+        title,
+        description,
+        departmentId,
+        assignedRoleId: assignedRoleId || null,
+        priority: priority || 'MEDIUM',
+        startDate: startDate ? new Date(startDate) : null,
+        dueDate: dueDate ? new Date(dueDate) : null,
+        endDate: endDate ? new Date(endDate) : null,
+        isAllDay: typeof isAllDay === 'boolean' ? isAllDay : false,
+        timeZone: timeZone || null,
+        progress: typeof progress === 'number' ? Math.max(0, Math.min(100, progress)) : 0,
+        checklistCount: typeof checklistCount === 'number' ? Math.max(0, checklistCount) : 0,
+        checklistCompleted: typeof checklistCompleted === 'number' ? Math.max(0, Math.min(checklistCount || 0, checklistCompleted)) : 0,
+        createdByRoleId: userRole?.id || null
+      },
+      include: {
+        department: { select: { id: true, name: true, color: true, projectId: true } },
+        assignedRole: {
+          select: {
+            id: true,
+            role: true,
+            user: { select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true } }
+          }
+        }
+      }
+    });
+
+    res.status(201).json({
+      ...task,
+      canView: true,
+      canEdit: ctx.isOwner || ctx.manageableDepartmentIds.includes(departmentId),
+      canAssign: ctx.isOwner || ctx.manageableDepartmentIds.includes(departmentId),
+      canReport: (ctx.roles ?? []).includes('EMPLOYEE')
+    });
+  } catch (e) {
+    console.error('[RoleAware] create task error:', e);
+    res.status(500).json({ error: 'Failed to create task' });
+  }
+});
+
 export default router;
 // ---- Additional role-aware endpoints ----
 
