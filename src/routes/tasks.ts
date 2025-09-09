@@ -18,7 +18,7 @@ const requireAuth = (req: Request, res: Response): boolean => {
 // POST /api/tasks - Create task
 router.post('/', authenticateToken, async (req: Request, res: Response) => {
   try {
-    const { title, description, departmentId, assignedRoleId, priority } = req.body;
+    const { title, description, departmentId, assignedRoleId, priority, startDate, dueDate, endDate, isAllDay, timeZone, progress, checklistCount, checklistCompleted } = req.body;
 
     // Check if user has access to this department
     if (!requireAuth(req, res)) return;
@@ -71,7 +71,16 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
         description,
         departmentId,
         assignedRoleId,
-        priority: priority || 'MEDIUM'
+        priority: priority || 'MEDIUM',
+        startDate: startDate ? new Date(startDate) : undefined,
+        dueDate: dueDate ? new Date(dueDate) : undefined,
+        endDate: endDate ? new Date(endDate) : undefined,
+        isAllDay: typeof isAllDay === 'boolean' ? isAllDay : undefined,
+        timeZone: timeZone || undefined,
+        progress: typeof progress === 'number' ? progress : undefined,
+        checklistCount: typeof checklistCount === 'number' ? checklistCount : undefined,
+        checklistCompleted: typeof checklistCompleted === 'number' ? checklistCompleted : undefined,
+        createdByRoleId: userRole.id
       },
       include: {
         department: true,
@@ -101,7 +110,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
 router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { title, description, status, priority } = req.body;
+    const { title, description, status, priority, startDate, dueDate, endDate, isAllDay, timeZone, progress, checklistCount, checklistCompleted } = req.body;
 
     const task = await prisma.task.findUnique({
       where: { id },
@@ -165,7 +174,15 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
         title,
         description,
         status,
-        priority
+        priority,
+        startDate: startDate !== undefined ? (startDate ? new Date(startDate) : null) : undefined,
+        dueDate: dueDate !== undefined ? (dueDate ? new Date(dueDate) : null) : undefined,
+        endDate: endDate !== undefined ? (endDate ? new Date(endDate) : null) : undefined,
+        isAllDay: typeof isAllDay === 'boolean' ? isAllDay : undefined,
+        timeZone: timeZone !== undefined ? (timeZone || null) : undefined,
+        progress: typeof progress === 'number' ? progress : undefined,
+        checklistCount: typeof checklistCount === 'number' ? checklistCount : undefined,
+        checklistCompleted: typeof checklistCompleted === 'number' ? checklistCompleted : undefined
       },
       include: {
         department: true,
@@ -343,7 +360,7 @@ router.post('/:id/assign/:roleId', authenticateToken, async (req: Request, res: 
 router.get('/project/:projectId', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { projectId } = req.params;
-    const { status, departmentId, assignedTo, page = 1, limit = 50 } = req.query;
+    const { status, departmentId, assignedTo, page = 1, limit = 50, dateFrom, dateTo, search, fields, sortBy = 'dueDate', sortOrder = 'desc' } = req.query as any;
 
     // Check if user has access to this project (including ownership)
     if (!requireAuth(req, res)) return;
@@ -357,50 +374,74 @@ router.get('/project/:projectId', authenticateToken, async (req: Request, res: R
     const limitNum = Math.min(parseInt(limit as string) || 50, 100);
     const offset = (pageNum - 1) * limitNum;
 
-    const where: any = {
-      department: { projectId }
-    };
+    const where: any = { department: { projectId } };
 
     if (status) where.status = status;
     if (departmentId) where.departmentId = departmentId;
     if (assignedTo) where.assignedRoleId = assignedTo;
+    if (dateFrom || dateTo) {
+      const gte = dateFrom ? new Date(String(dateFrom)) : undefined;
+      const lte = dateTo ? new Date(String(dateTo)) : undefined;
+      if ((gte && isNaN(gte.getTime())) || (lte && isNaN(lte.getTime()))) {
+        return res.status(400).json({ error: 'Invalid date range' });
+      }
+      where.AND = [{ OR: [ { dueDate: { gte, lte } }, { startDate: { gte, lte } } ] }];
+    }
+    if (search) {
+      where.OR = [
+        { title: { contains: String(search), mode: 'insensitive' } },
+        { description: { contains: String(search), mode: 'insensitive' } }
+      ];
+    }
 
+    const orderBy: any = {};
+    const normalizedSortOrder = String(sortOrder) === 'asc' ? 'asc' : 'desc';
+    if (sortBy === 'priority') orderBy.priority = normalizedSortOrder;
+    else if (sortBy === 'title') orderBy.title = normalizedSortOrder;
+    else if (sortBy === 'startDate') orderBy.startDate = normalizedSortOrder;
+    else if (sortBy === 'createdAt') orderBy.createdAt = normalizedSortOrder;
+    else orderBy.dueDate = normalizedSortOrder; // default
+
+    const minimal = String(fields || '') === 'minimal';
     const [tasks, totalCount] = await Promise.all([
       prisma.task.findMany({
         where,
-        select: {
+        select: minimal ? {
+          id: true,
+          title: true,
+          status: true,
+          priority: true,
+          departmentId: true,
+          startDate: true,
+          dueDate: true,
+          createdAt: true,
+          department: { select: { id: true, name: true, type: true, color: true, projectId: true } },
+          assignedRoleId: true
+        } : {
           id: true,
           title: true,
           description: true,
           status: true,
           priority: true,
+          startDate: true,
+          dueDate: true,
           createdAt: true,
           updatedAt: true,
           department: {
-            select: {
-              id: true,
-              name: true,
-              type: true
-            }
+            select: { id: true, name: true, type: true, color: true, projectId: true }
           },
           assignedRole: {
             select: {
               id: true,
               user: {
-                select: {
-                  id: true,
-                  firstName: true,
-                  lastName: true,
-                  email: true,
-                  avatarUrl: true
-                }
+                select: { id: true, firstName: true, lastName: true, email: true, avatarUrl: true }
               }
             }
           }
         },
         skip: offset,
         take: limitNum,
-        orderBy: { createdAt: 'desc' }
+        orderBy
       }),
       prisma.task.count({ where })
     ]);

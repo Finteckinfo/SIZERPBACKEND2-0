@@ -258,7 +258,7 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
       search,
       page = '1',
       limit = '20',
-      sortBy = 'createdAt',
+      sortBy = 'dueDate',
       sortOrder = 'desc',
       fields
     } = req.query as any;
@@ -295,11 +295,21 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
     if (statusFilter) where.status = Array.isArray(statusFilter) ? { in: statusFilter } : statusFilter;
     if (priorityFilter) where.priority = Array.isArray(priorityFilter) ? { in: priorityFilter } : priorityFilter;
 
-    // date range (using createdAt as date proxy for now; will map to dueDate when available)
+    // date range: true time filtering using (dueDate OR startDate)
     if (dateFrom || dateTo) {
-      where.createdAt = {};
-      if (dateFrom) (where.createdAt as any).gte = new Date(String(dateFrom));
-      if (dateTo) (where.createdAt as any).lte = new Date(String(dateTo));
+      const gte = dateFrom ? new Date(String(dateFrom)) : undefined;
+      const lte = dateTo ? new Date(String(dateTo)) : undefined;
+      if ((gte && isNaN(gte.getTime())) || (lte && isNaN(lte.getTime()))) {
+        return res.status(400).json({ error: 'Invalid date range' });
+      }
+      where.AND = [
+        {
+          OR: [
+            { dueDate: { gte, lte } },
+            { startDate: { gte, lte } }
+          ]
+        }
+      ];
     }
     if (search) {
       where.OR = [
@@ -344,12 +354,12 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
     // Sorting
     const orderBy: any = {};
     const normalizedSortBy = String(sortBy);
-    if (normalizedSortBy === 'priority') {
-      orderBy.priority = String(sortOrder) === 'asc' ? 'asc' : 'desc';
-    } else {
-      // default to createdAt; 'dueDate' is reserved and currently maps to createdAt
-      orderBy.createdAt = String(sortOrder) === 'asc' ? 'asc' : 'desc';
-    }
+    const normalizedSortOrder = String(sortOrder) === 'asc' ? 'asc' : 'desc';
+    if (normalizedSortBy === 'priority') orderBy.priority = normalizedSortOrder;
+    else if (normalizedSortBy === 'title') orderBy.title = normalizedSortOrder;
+    else if (normalizedSortBy === 'startDate') orderBy.startDate = normalizedSortOrder;
+    else if (normalizedSortBy === 'createdAt') orderBy.createdAt = normalizedSortOrder;
+    else /* dueDate default */ orderBy.dueDate = normalizedSortOrder;
 
     const minimal = String(fields || '') === 'minimal';
 
@@ -363,7 +373,10 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
           priority: true,
           departmentId: true,
           assignedRoleId: true,
-          createdAt: true
+          startDate: true,
+          dueDate: true,
+          createdAt: true,
+          department: { select: { id: true, name: true, projectId: true, color: true } }
         } : {
           id: true,
           title: true,
@@ -371,11 +384,14 @@ router.get('/projects/:projectId/tasks', authenticateToken, async (req: Request,
           status: true,
           priority: true,
           departmentId: true,
+          startDate: true,
+          dueDate: true,
           createdAt: true,
           updatedAt: true,
           assignedRole: {
             select: {
               id: true,
+              role: true,
               user: { select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true } }
             }
           }
@@ -452,7 +468,10 @@ router.get('/projects/:projectId/tasks/calendar', authenticateToken, async (req:
     const priorityFilter = normalizeList(priority);
     if (statusFilter) where.status = Array.isArray(statusFilter) ? { in: statusFilter } : statusFilter;
     if (priorityFilter) where.priority = Array.isArray(priorityFilter) ? { in: priorityFilter } : priorityFilter;
-    where.createdAt = { gte: new Date(String(start)), lte: new Date(String(end)) };
+    const gte = new Date(String(start));
+    const lte = new Date(String(end));
+    if (isNaN(gte.getTime()) || isNaN(lte.getTime())) return res.status(400).json({ error: 'Invalid date range' });
+    where.AND = [{ OR: [ { dueDate: { gte, lte } }, { startDate: { gte, lte } } ] }];
 
     const isOwner = ctx.isOwner;
     const isManager = (ctx.roles ?? []).includes('PROJECT_MANAGER');
@@ -477,9 +496,9 @@ router.get('/projects/:projectId/tasks/calendar', authenticateToken, async (req:
 
     if (departmentId) where.departmentId = String(departmentId); else where.departmentId = { in: visibleDeptIds };
 
-    const tasks = await prisma.task.findMany({ where, select: { id: true, status: true, createdAt: true } });
+    const tasks = await prisma.task.findMany({ where, select: { id: true, status: true, startDate: true, dueDate: true, createdAt: true } });
 
-    // Aggregate by day/week
+    // Aggregate by day/week/month
     const fmtDate = (d: Date) => {
       const y = d.getUTCFullYear();
       const m = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -495,12 +514,17 @@ router.get('/projects/:projectId/tasks/calendar', authenticateToken, async (req:
         const day = d.getUTCDay() || 7;
         d.setUTCDate(d.getUTCDate() - (day - 1));
         return fmtDate(d);
+      } else if (granularity === 'month') {
+        const y = dt.getUTCFullYear();
+        const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+        return `${y}-${m}-01`;
       }
       return fmtDate(dt);
     };
 
     for (const t of tasks) {
-      const key = toBucketKey(new Date(t.createdAt));
+      const when = (t.dueDate as Date | null) ?? (t.startDate as Date | null) ?? (t.createdAt as Date);
+      const key = toBucketKey(new Date(when));
       if (!bucketsMap.has(key)) bucketsMap.set(key, { total: 0, pending: 0, inProgress: 0, completed: 0, approved: 0 });
       const b = bucketsMap.get(key)!;
       b.total += 1;
