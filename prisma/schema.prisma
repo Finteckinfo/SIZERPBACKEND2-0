@@ -79,6 +79,7 @@ model User {
   paymentsMade  Payment[]       @relation("PaymentsMade")
   paymentsRecv  Payment[]       @relation("PaymentsReceived")
   invites       ProjectInvite[]
+  taskActivities TaskActivity[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 }
@@ -202,11 +203,15 @@ model Task {
   progress            Int       @default(0)
   checklistCount      Int       @default(0)
   checklistCompleted  Int       @default(0)
+  // Kanban-specific fields
+  order               Int       @default(0)
+  estimatedHours      Float?
   // Audit/visibility
   deletedAt     DateTime?
   createdByRole UserRole?  @relation("TasksCreatedByRole", fields: [createdByRoleId], references: [id])
   createdByRoleId String?
   payments      Payment[]
+  activities    TaskActivity[]
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
@@ -216,6 +221,23 @@ model Task {
   @@index([startDate])
   @@index([status])
   @@index([priority])
+  @@index([status, order])
+}
+
+model TaskActivity {
+  id            String   @id @default(cuid())
+  type          String   // STATUS_CHANGED, ASSIGNED, CREATED, etc
+  description   String
+  previousValue String?
+  newValue      String?
+  task          Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId        String
+  user          User     @relation(fields: [userId], references: [id])
+  userId        String
+  createdAt     DateTime @default(now())
+
+  @@index([taskId])
+  @@index([createdAt])
 }
 
 model Payment {

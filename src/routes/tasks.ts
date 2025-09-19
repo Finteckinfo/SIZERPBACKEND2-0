@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
 import { checkProjectAccess } from '../utils/accessControl.js';
+import { broadcastTaskMoved, broadcastTaskAssigned, broadcastTaskCreated, broadcastTaskUpdated } from '../services/websocket.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -98,6 +99,9 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
         }
       }
     });
+
+    // Broadcast task creation
+    broadcastTaskCreated(task.department.projectId, task, req.user!.id);
 
     res.status(201).json(task);
   } catch (error) {
@@ -200,6 +204,9 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
         }
       }
     });
+
+    // Broadcast task update
+    broadcastTaskUpdated(task.department.projectId, id, req.body, req.user!.id);
 
     res.json(updatedTask);
   } catch (error) {
@@ -349,6 +356,9 @@ router.post('/:id/assign/:roleId', authenticateToken, async (req: Request, res: 
       }
     });
 
+    // Broadcast task assignment
+    broadcastTaskAssigned(task.department.projectId, id, roleId, req.user!.id);
+
     res.json(updatedTask);
   } catch (error) {
     console.error('Error assigning task:', error);
@@ -463,6 +473,152 @@ router.get('/project/:projectId', authenticateToken, async (req: Request, res: R
   }
 });
 
+// GET /api/tasks/kanban/:projectId - Kanban-optimized task retrieval
+router.get('/kanban/:projectId', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+    const { 
+      departmentId, 
+      assignedRoleIds, 
+      priorities, 
+      includeCompleted = 'false' 
+    } = req.query;
+
+    // Check if user has access to this project
+    if (!requireAuth(req, res)) return;
+
+    const access = await checkProjectAccess(req.user!.id, projectId);
+    if (!access.hasAccess) {
+      return res.status(403).json({ error: 'Access denied to this project' });
+    }
+
+    // Build where clause
+    const where: any = { 
+      department: { projectId },
+      deletedAt: null
+    };
+
+    // Apply filters
+    if (departmentId) {
+      where.departmentId = departmentId;
+    }
+
+    if (assignedRoleIds && Array.isArray(assignedRoleIds)) {
+      where.assignedRoleId = { in: assignedRoleIds };
+    }
+
+    if (priorities && Array.isArray(priorities)) {
+      where.priority = { in: priorities };
+    }
+
+    // Status filter - exclude completed unless specifically requested
+    if (includeCompleted === 'false') {
+      where.status = { in: ['PENDING', 'IN_PROGRESS'] };
+    }
+
+    // Get all tasks for the project
+    const tasks = await prisma.task.findMany({
+      where,
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        status: true,
+        priority: true,
+        estimatedHours: true,
+        dueDate: true,
+        assignedRoleId: true,
+        order: true,
+        progress: true,
+        createdAt: true,
+        updatedAt: true,
+        assignedRole: {
+          select: {
+            id: true,
+            user: {
+              select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                avatarUrl: true
+              }
+            }
+          }
+        },
+        department: {
+          select: {
+            id: true,
+            name: true,
+            color: true,
+            type: true
+          }
+        }
+      },
+      orderBy: [
+        { status: 'asc' },
+        { order: 'asc' },
+        { createdAt: 'asc' }
+      ]
+    });
+
+    // Group tasks by status for kanban columns
+    const columns = {
+      PENDING: tasks.filter(task => task.status === 'PENDING'),
+      IN_PROGRESS: tasks.filter(task => task.status === 'IN_PROGRESS'),
+      COMPLETED: tasks.filter(task => task.status === 'COMPLETED'),
+      APPROVED: tasks.filter(task => task.status === 'APPROVED')
+    };
+
+    // Get user permissions for this project
+    const userRole = await prisma.userRole.findFirst({
+      where: {
+        userId: req.user!.id,
+        projectId: projectId
+      },
+      select: { role: true }
+    });
+
+    const userPermissions = {
+      canCreateTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER',
+      canEditAllTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER',
+      canDeleteTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER',
+      canAssignTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER'
+    };
+
+    // Transform tasks to include assignedUser object
+    const transformedColumns = {
+      PENDING: columns.PENDING.map(task => ({
+        ...task,
+        assignedUser: task.assignedRole?.user || null
+      })),
+      IN_PROGRESS: columns.IN_PROGRESS.map(task => ({
+        ...task,
+        assignedUser: task.assignedRole?.user || null
+      })),
+      COMPLETED: columns.COMPLETED.map(task => ({
+        ...task,
+        assignedUser: task.assignedRole?.user || null
+      })),
+      APPROVED: columns.APPROVED.map(task => ({
+        ...task,
+        assignedUser: task.assignedRole?.user || null
+      }))
+    };
+
+    res.json({
+      projectId,
+      columns: transformedColumns,
+      totalTasks: tasks.length,
+      userPermissions
+    });
+
+  } catch (error) {
+    console.error('Error fetching kanban tasks:', error);
+    res.status(500).json({ error: 'Failed to fetch kanban tasks' });
+  }
+});
+
 // GET /api/tasks/department/:departmentId - Get department tasks
 router.get('/department/:departmentId', authenticateToken, async (req: Request, res: Response) => {
   try {
@@ -534,6 +690,358 @@ router.get('/department/:departmentId', authenticateToken, async (req: Request, 
   } catch (error) {
     console.error('Error fetching department tasks:', error);
     res.status(500).json({ error: 'Failed to fetch tasks' });
+  }
+});
+
+// PATCH /api/tasks/:id/position - Task position/order management for drag and drop
+router.patch('/:id/position', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status, order, departmentId } = req.body;
+
+    if (!status || typeof order !== 'number') {
+      return res.status(400).json({ error: 'Status and order are required' });
+    }
+
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: { department: true }
+    });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Check permissions
+    if (!requireAuth(req, res)) return;
+
+    const access = await checkProjectAccess(req.user!.id, task.department.projectId);
+    if (!access.hasAccess) {
+      return res.status(403).json({ error: 'Access denied to this project' });
+    }
+
+    const userRole = await prisma.userRole.findFirst({
+      where: {
+        userId: req.user!.id,
+        projectId: task.department.projectId
+      }
+    });
+
+    if (!userRole || (userRole.role === 'EMPLOYEE' && task.assignedRoleId !== userRole.id)) {
+      return res.status(403).json({ error: 'Insufficient permissions to move this task' });
+    }
+
+    // Start transaction to handle order updates
+    const result = await prisma.$transaction(async (tx) => {
+      // If moving to a different department, update departmentId
+      const updateData: any = { status, order };
+      if (departmentId && departmentId !== task.departmentId) {
+        updateData.departmentId = departmentId;
+      }
+
+      // Update the task
+      const updatedTask = await tx.task.update({
+        where: { id },
+        data: updateData,
+        include: {
+          department: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              type: true
+            }
+          },
+          assignedRole: {
+            select: {
+              id: true,
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                  firstName: true,
+                  lastName: true,
+                  avatarUrl: true
+                }
+              }
+            }
+          }
+        }
+      });
+
+      // Get other tasks in the same column that need order adjustment
+      const sameDepartmentId = departmentId || task.departmentId;
+      const affectedTasks = await tx.task.findMany({
+        where: {
+          departmentId: sameDepartmentId,
+          status: status,
+          id: { not: id },
+          order: { gte: order }
+        },
+        select: { id: true, order: true }
+      });
+
+      // Increment order for affected tasks
+      const updatePromises = affectedTasks.map(affectedTask =>
+        tx.task.update({
+          where: { id: affectedTask.id },
+          data: { order: affectedTask.order + 1 },
+          select: { id: true, order: true }
+        })
+      );
+
+      const updatedAffectedTasks = await Promise.all(updatePromises);
+
+      // Log activity
+      await tx.taskActivity.create({
+        data: {
+          type: status !== task.status ? 'STATUS_CHANGED' : 'POSITION_CHANGED',
+          description: status !== task.status 
+            ? `Status changed from ${task.status} to ${status}`
+            : `Task position updated to ${order}`,
+          previousValue: status !== task.status ? task.status : task.order.toString(),
+          newValue: status !== task.status ? status : order.toString(),
+          taskId: id,
+          userId: req.user!.id
+        }
+      });
+
+      return {
+        task: updatedTask,
+        affectedTasks: updatedAffectedTasks
+      };
+    });
+
+    // Broadcast task movement
+    if (status !== task.status) {
+      broadcastTaskMoved(task.department.projectId, id, task.status, status, req.user!.id);
+    }
+
+    res.json({
+      taskId: id,
+      status: result.task.status,
+      order: result.task.order,
+      updatedAt: result.task.updatedAt,
+      affectedTasks: result.affectedTasks
+    });
+
+  } catch (error) {
+    console.error('Error updating task position:', error);
+    res.status(500).json({ error: 'Failed to update task position' });
+  }
+});
+
+// PATCH /api/tasks/bulk-update - Bulk task operations
+router.patch('/bulk-update', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { taskIds, updates } = req.body;
+
+    if (!Array.isArray(taskIds) || taskIds.length === 0) {
+      return res.status(400).json({ error: 'taskIds array is required' });
+    }
+
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ error: 'updates object is required' });
+    }
+
+    if (!requireAuth(req, res)) return;
+
+    // Get all tasks to check permissions
+    const tasks = await prisma.task.findMany({
+      where: { id: { in: taskIds } },
+      include: { 
+        department: { 
+          select: { projectId: true } 
+        } 
+      }
+    });
+
+    if (tasks.length === 0) {
+      return res.status(404).json({ error: 'No tasks found' });
+    }
+
+    // Check if user has access to all projects involved
+    const projectIds = [...new Set(tasks.map(task => task.department.projectId))];
+    const accessChecks = await Promise.all(
+      projectIds.map(projectId => checkProjectAccess(req.user!.id, projectId))
+    );
+
+    const hasAccessToAll = accessChecks.every(access => access.hasAccess);
+    if (!hasAccessToAll) {
+      return res.status(403).json({ error: 'Access denied to one or more tasks' });
+    }
+
+    // Get user roles for permission checking
+    const userRoles = await prisma.userRole.findMany({
+      where: {
+        userId: req.user!.id,
+        projectId: { in: projectIds }
+      }
+    });
+
+    const updatedTasks: any[] = [];
+    const failedTasks: any[] = [];
+
+    // Process each task
+    for (const task of tasks) {
+      try {
+        const userRole = userRoles.find(role => role.projectId === task.department.projectId);
+        
+        // Check permissions
+        if (!userRole) {
+          failedTasks.push({
+            id: task.id,
+            error: 'No role found for this project'
+          });
+          continue;
+        }
+
+        // Employees can only update their own tasks
+        if (userRole.role === 'EMPLOYEE' && task.assignedRoleId !== userRole.id) {
+          failedTasks.push({
+            id: task.id,
+            error: 'Insufficient permissions'
+          });
+          continue;
+        }
+
+        // Prepare update data
+        const updateData: any = {};
+        if (updates.status) updateData.status = updates.status;
+        if (updates.assignedRoleId !== undefined) updateData.assignedRoleId = updates.assignedRoleId;
+        if (updates.priority) updateData.priority = updates.priority;
+        if (updates.dueDate !== undefined) updateData.dueDate = updates.dueDate ? new Date(updates.dueDate) : null;
+        if (updates.estimatedHours !== undefined) updateData.estimatedHours = updates.estimatedHours;
+        if (updates.departmentId) updateData.departmentId = updates.departmentId;
+
+        const updatedTask = await prisma.task.update({
+          where: { id: task.id },
+          data: updateData,
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            priority: true,
+            assignedRoleId: true,
+            dueDate: true,
+            estimatedHours: true,
+            updatedAt: true,
+            assignedRole: {
+              select: {
+                user: {
+                  select: {
+                    id: true,
+                    email: true,
+                    firstName: true,
+                    lastName: true
+                  }
+                }
+              }
+            }
+          }
+        });
+
+        // Log activity for bulk update
+        await prisma.taskActivity.create({
+          data: {
+            type: 'BULK_UPDATED',
+            description: `Task bulk updated: ${Object.keys(updateData).join(', ')}`,
+            previousValue: JSON.stringify({
+              status: task.status,
+              priority: task.priority,
+              assignedRoleId: task.assignedRoleId
+            }),
+            newValue: JSON.stringify(updateData),
+            taskId: task.id,
+            userId: req.user!.id
+          }
+        });
+
+        updatedTasks.push(updatedTask);
+
+      } catch (error) {
+        console.error(`Error updating task ${task.id}:`, error);
+        failedTasks.push({
+          id: task.id,
+          error: 'Failed to update task'
+        });
+      }
+    }
+
+    res.json({
+      updatedTasks,
+      failedTasks,
+      summary: {
+        total: taskIds.length,
+        successful: updatedTasks.length,
+        failed: failedTasks.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in bulk update:', error);
+    res.status(500).json({ error: 'Failed to perform bulk update' });
+  }
+});
+
+// GET /api/tasks/:id/activity - Task activity/audit trail
+router.get('/:id/activity', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: { department: true }
+    });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Check permissions
+    if (!requireAuth(req, res)) return;
+
+    const access = await checkProjectAccess(req.user!.id, task.department.projectId);
+    if (!access.hasAccess) {
+      return res.status(403).json({ error: 'Access denied to this task' });
+    }
+
+    const activities = await prisma.taskActivity.findMany({
+      where: { taskId: id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            avatarUrl: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const formattedActivities = activities.map(activity => ({
+      id: activity.id,
+      type: activity.type,
+      description: activity.description,
+      userId: activity.userId,
+      userEmail: activity.user.email,
+      userName: `${activity.user.firstName || ''} ${activity.user.lastName || ''}`.trim() || activity.user.email,
+      previousValue: activity.previousValue,
+      newValue: activity.newValue,
+      timestamp: activity.createdAt
+    }));
+
+    res.json({
+      taskId: id,
+      activities: formattedActivities
+    });
+
+  } catch (error) {
+    console.error('Error fetching task activity:', error);
+    res.status(500).json({ error: 'Failed to fetch task activity' });
   }
 });
 

@@ -26,6 +26,9 @@ import invitesRouter from "./routes/invites.js";
 import userRolesRouter from "./routes/user-roles.js";
 import tasksRouter from "./routes/tasks.js";
 import roleAwareRouter from "./routes/role-aware.js";
+import analyticsRouter from "./routes/analytics.js";
+import { initializeWebSocket } from "./services/websocket.js";
+import { createServer } from 'http';
 
 dotenv.config();
 const app = express();
@@ -86,6 +89,9 @@ app.use("/api/tasks", tasksRouter);
 // Role-aware routes
 app.use("/api/role-aware", roleAwareRouter);
 
+// Analytics routes
+app.use("/api/analytics", analyticsRouter);
+
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);
 
@@ -93,6 +99,11 @@ app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRout
 app.use("/api/user", rateLimiter(200, 60000), queryOptimizer, userRouter);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`[Server] Running on port ${PORT}`);
+const server = createServer(app);
+
+// Initialize WebSocket server
+initializeWebSocket(server);
+
+server.listen(PORT, () => {
+  console.log(`[Server] HTTP and WebSocket server running on port ${PORT}`);
 });
