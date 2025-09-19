@@ -17,7 +17,15 @@ class WebSocketManager {
       verifyClient: this.verifyClient.bind(this)
     });
 
+    // Also support cross-project WebSocket endpoint
+    const crossProjectWss = new WebSocketServer({
+      server,
+      path: '/api/tasks/live/all-projects',
+      verifyClient: this.verifyClient.bind(this)
+    });
+
     this.wss.on('connection', this.handleConnection.bind(this));
+    crossProjectWss.on('connection', this.handleCrossProjectConnection.bind(this));
   }
 
   private async verifyClient(info: { req: IncomingMessage }): Promise<boolean> {
@@ -118,6 +126,57 @@ class WebSocketManager {
     }));
   }
 
+  private handleCrossProjectConnection(ws: WebSocket, req: IncomingMessage) {
+    const user = (req as any).user;
+
+    if (!user) {
+      ws.close(1008, 'Invalid connection parameters');
+      return;
+    }
+
+    console.log(`Cross-project WebSocket connected: User ${user.sub}`);
+
+    // Add connection to cross-project room
+    const crossProjectRoom = 'all-projects';
+    if (!this.connections.has(crossProjectRoom)) {
+      this.connections.set(crossProjectRoom, new Set());
+    }
+    this.connections.get(crossProjectRoom)!.add(ws);
+
+    // Store user connection
+    this.userConnections.set(`${user.sub}-cross-project`, ws);
+
+    // Handle messages
+    ws.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        this.handleMessage(ws, message, crossProjectRoom, user);
+      } catch (error) {
+        console.error('Invalid WebSocket message:', error);
+      }
+    });
+
+    // Handle disconnection
+    ws.on('close', () => {
+      console.log(`Cross-project WebSocket disconnected: User ${user.sub}`);
+      this.connections.get(crossProjectRoom)?.delete(ws);
+      this.userConnections.delete(`${user.sub}-cross-project`);
+      
+      // Clean up empty rooms
+      if (this.connections.get(crossProjectRoom)?.size === 0) {
+        this.connections.delete(crossProjectRoom);
+      }
+    });
+
+    // Send welcome message
+    ws.send(JSON.stringify({
+      type: 'CONNECTED',
+      scope: 'all-projects',
+      userId: user.sub,
+      timestamp: new Date().toISOString()
+    }));
+  }
+
   private handleMessage(ws: WebSocket, message: any, projectId: string, user: any) {
     // Handle ping/pong for connection health
     if (message.type === 'PING') {
@@ -140,6 +199,23 @@ class WebSocketManager {
     });
 
     projectConnections.forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(messageStr);
+      }
+    });
+  }
+
+  // Broadcast task updates to cross-project listeners
+  public broadcastCrossProjectUpdate(message: any) {
+    const crossProjectConnections = this.connections.get('all-projects');
+    if (!crossProjectConnections) return;
+
+    const messageStr = JSON.stringify({
+      ...message,
+      timestamp: new Date().toISOString()
+    });
+
+    crossProjectConnections.forEach(ws => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(messageStr);
       }
@@ -184,44 +260,62 @@ export const getWebSocketManager = () => wsManager;
 // Helper functions for broadcasting task events
 export const broadcastTaskMoved = (projectId: string, taskId: string, fromStatus: string, toStatus: string, movedBy: string) => {
   if (wsManager) {
-    wsManager.broadcastTaskUpdate(projectId, {
+    const message = {
       type: 'TASK_MOVED',
       taskId,
+      projectId,
       fromStatus,
       toStatus,
       movedBy
-    });
+    };
+    
+    // Broadcast to project-specific listeners
+    wsManager.broadcastTaskUpdate(projectId, message);
+    
+    // Also broadcast to cross-project listeners
+    wsManager.broadcastCrossProjectUpdate(message);
   }
 };
 
 export const broadcastTaskAssigned = (projectId: string, taskId: string, assignedTo: string, assignedBy: string) => {
   if (wsManager) {
-    wsManager.broadcastTaskUpdate(projectId, {
+    const message = {
       type: 'TASK_ASSIGNED',
       taskId,
+      projectId,
       assignedTo,
       assignedBy
-    });
+    };
+    
+    wsManager.broadcastTaskUpdate(projectId, message);
+    wsManager.broadcastCrossProjectUpdate(message);
   }
 };
 
 export const broadcastTaskCreated = (projectId: string, task: any, createdBy: string) => {
   if (wsManager) {
-    wsManager.broadcastTaskUpdate(projectId, {
+    const message = {
       type: 'TASK_CREATED',
-      task,
+      task: { ...task, projectId },
       createdBy
-    });
+    };
+    
+    wsManager.broadcastTaskUpdate(projectId, message);
+    wsManager.broadcastCrossProjectUpdate(message);
   }
 };
 
 export const broadcastTaskUpdated = (projectId: string, taskId: string, updates: any, updatedBy: string) => {
   if (wsManager) {
-    wsManager.broadcastTaskUpdate(projectId, {
+    const message = {
       type: 'TASK_UPDATED',
       taskId,
+      projectId,
       updates,
       updatedBy
-    });
+    };
+    
+    wsManager.broadcastTaskUpdate(projectId, message);
+    wsManager.broadcastCrossProjectUpdate(message);
   }
 };
