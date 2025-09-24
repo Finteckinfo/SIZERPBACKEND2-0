@@ -48,7 +48,15 @@ app.use(responseOptimizer);
 
 // Apply CORS globally (before routes)
 app.use(corsMiddleware);
-app.options('/*', corsMiddleware);
+
+// Handle OPTIONS requests for all routes
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.sendStatus(200);
+});
 
 // Trust proxy when behind Railway/Proxies
 app.set('trust proxy', 1);
