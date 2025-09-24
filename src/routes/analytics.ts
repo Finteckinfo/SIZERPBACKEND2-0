@@ -965,52 +965,131 @@ router.get('/timeline/analysis', authenticateToken, async (req: Request, res: Re
 // DEPARTMENT & RESOURCE
 router.get('/departments/efficiency', authenticateToken, async (req: Request, res: Response) => {
   try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
     const { projectId, dateRange = '30d' } = req.query as any;
-    res.json({
-      projectId,
-      dateRange,
-      departmentComparison: [],
-      resourceUtilization: [],
-      bottlenecks: [],
-      capacity: [],
-      workload: []
-    });
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+
+    const access = await checkProjectAccess(req.user.id, projectId);
+    if (!access.hasAccess) return res.status(403).json({ error: 'Access denied to this project' });
+
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const departments = await prisma.department.findMany({ where: { projectId }, select: { id: true, name: true } });
+
+    const departmentComparison = await Promise.all(departments.map(async d => {
+      const total = await prisma.task.count({ where: { departmentId: d.id, createdAt: { gte: startDate } } });
+      const completed = await prisma.task.count({ where: { departmentId: d.id, status: { in: ['COMPLETED','APPROVED'] }, updatedAt: { gte: startDate } } });
+      const inProgress = await prisma.task.count({ where: { departmentId: d.id, status: 'IN_PROGRESS' } });
+      return {
+        departmentId: d.id,
+        departmentName: d.name,
+        total,
+        completed,
+        inProgress,
+        completionRate: total > 0 ? Math.round((completed/total)*100) : 0
+      };
+    }));
+
+    // Resource utilization proxy: tasks per active member
+    const roles = await prisma.userRole.findMany({ where: { projectId }, select: { id: true, userId: true } });
+    const uniqueUsers = Array.from(new Set(roles.map(r => r.userId)));
+    const totalOpen = await prisma.task.count({ where: { department: { projectId }, status: { notIn: ['COMPLETED','APPROVED'] } } });
+    const resourceUtilization = [{ metric: 'tasksPerActiveMember', value: uniqueUsers.length ? Math.round((totalOpen/uniqueUsers.length)*100)/100 : 0 }];
+
+    // Bottlenecks: departments with high IN_PROGRESS or long times
+    const bottlenecks = departmentComparison
+      .filter(dc => dc.inProgress > Math.max(5, Math.ceil(dc.total * 0.3)))
+      .map(dc => ({ departmentId: dc.departmentId, reason: 'HIGH_IN_PROGRESS', level: 'MEDIUM' }));
+
+    // Capacity & workload placeholders
+    const capacity = departments.map(d => ({ departmentId: d.id, capacityUnits: null as number | null }));
+    const workload = departmentComparison.map(dc => ({ departmentId: dc.departmentId, openTasks: dc.total - dc.completed }));
+
+    res.json({ projectId, dateRange, departmentComparison, resourceUtilization, bottlenecks, capacity, workload });
   } catch (e) {
+    console.error('departments efficiency error', e);
     res.status(500).json({ error: 'Failed to fetch department efficiency' });
   }
 });
 
 router.get('/resources/utilization', authenticateToken, async (req: Request, res: Response) => {
   try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
     const { projectId, resourceType = 'human' } = req.query as any;
-    res.json({
-      projectId,
-      resourceType,
-      capacityVsDemand: [],
-      utilizationRates: [],
-      optimization: [],
-      allocationEfficiency: 0,
-      costPerResource: 0
-    });
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+
+    const access = await checkProjectAccess(req.user.id, projectId);
+    if (!access.hasAccess) return res.status(403).json({ error: 'Access denied to this project' });
+
+    // Human resources proxy
+    if (resourceType === 'human') {
+      const roles = await prisma.userRole.findMany({ where: { projectId }, select: { userId: true } });
+      const members = Array.from(new Set(roles.map(r => r.userId))).length || 1;
+      const openTasks = await prisma.task.count({ where: { department: { projectId }, status: { notIn: ['COMPLETED','APPROVED'] } } });
+      const completed30 = await prisma.task.count({ where: { department: { projectId }, status: { in: ['COMPLETED','APPROVED'] }, updatedAt: { gte: new Date(Date.now()-30*864e5) } } });
+
+      const capacityVsDemand = [{ capacityUnits: members, demandUnits: openTasks }];
+      const utilizationRates = [{ metric: 'tasksPerMember', value: Math.round((openTasks/members)*100)/100 }];
+      const optimization = [{ recommendation: 'Balance workload across members with high open tasks' }];
+      const allocationEfficiency = Math.round((completed30 / (openTasks + completed30 || 1)) * 100);
+      const costPerResource = null as number | null; // pending cost model
+
+      return res.json({ projectId, resourceType, capacityVsDemand, utilizationRates, optimization, allocationEfficiency, costPerResource });
+    }
+
+    // Equipment/Budget placeholders until models exist
+    return res.json({ projectId, resourceType, capacityVsDemand: [], utilizationRates: [], optimization: [], allocationEfficiency: null, costPerResource: null });
   } catch (e) {
+    console.error('resource utilization error', e);
     res.status(500).json({ error: 'Failed to fetch resource utilization' });
   }
 });
 
 router.get('/workload/distribution', authenticateToken, async (req: Request, res: Response) => {
   try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
     const { projectId, teamId, dateRange = '30d' } = req.query as any;
-    res.json({
-      projectId,
-      teamId,
-      dateRange,
-      distribution: [],
-      capacityPlanning: [],
-      workloadBalancing: [],
-      overtime: [],
-      productivity: []
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+
+    const access = await checkProjectAccess(req.user.id, projectId);
+    if (!access.hasAccess) return res.status(403).json({ error: 'Access denied to this project' });
+
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Pull tasks with assignedRole for distribution
+    const tasks = await prisma.task.findMany({
+      where: { department: { projectId }, OR: [ { updatedAt: { gte: startDate } }, { createdAt: { gte: startDate } } ] },
+      select: { id: true, status: true, assignedRole: { select: { userId: true } } }
     });
+
+    const distributionMap: Record<string, { userId: string, open: number, total: number }> = {};
+    for (const t of tasks) {
+      const uid = t.assignedRole?.userId || 'unassigned';
+      if (!distributionMap[uid]) distributionMap[uid] = { userId: uid, open: 0, total: 0 };
+      distributionMap[uid].total++;
+      if (t.status !== 'COMPLETED' && t.status !== 'APPROVED') distributionMap[uid].open++;
+    }
+    const distribution = Object.values(distributionMap);
+
+    // Capacity planning (proxy): target open per member <= 5
+    const capacityPlanning = distribution.map(d => ({ userId: d.userId, open: d.open, target: 5, delta: d.open - 5 }));
+
+    // Workload balancing recommendations
+    const workloadBalancing = distribution
+      .filter(d => d.open > 5)
+      .map(d => ({ userId: d.userId, recommendation: 'Reassign tasks to members with open <= 3' }));
+
+    // Overtime + productivity placeholders (no time tracking)
+    const overtime: any[] = [];
+    const productivity: any[] = [];
+
+    res.json({ projectId, teamId, dateRange, distribution, capacityPlanning, workloadBalancing, overtime, productivity });
   } catch (e) {
+    console.error('workload distribution error', e);
     res.status(500).json({ error: 'Failed to fetch workload distribution' });
   }
 });
