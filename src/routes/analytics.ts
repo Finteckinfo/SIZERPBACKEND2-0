@@ -425,6 +425,161 @@ router.get('/kanban/all-projects/metrics', authenticateToken, async (req: Reques
   }
 });
 
+// NEW: All Projects Performance (aggregated)
+router.get('/projects/all/performance', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    const { dateRange = '30d', granularity = 'weekly' } = req.query as any;
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Accessible projects
+    const roles = await prisma.userRole.findMany({
+      where: { userId: req.user.id },
+      select: { projectId: true }
+    });
+    const projectIds = Array.from(new Set(roles.map(r => r.projectId)));
+    if (projectIds.length === 0) return res.json({ dateRange, granularity, metrics: {} });
+
+    // Totals per all projects
+    const totalTasks = await prisma.task.count({
+      where: { department: { projectId: { in: projectIds } }, createdAt: { gte: startDate } }
+    });
+    const completedTasks = await prisma.task.count({
+      where: {
+        department: { projectId: { in: projectIds } },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        updatedAt: { gte: startDate }
+      }
+    });
+    const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+    const tasksWithDue = await prisma.task.count({
+      where: { department: { projectId: { in: projectIds } }, dueDate: { gte: startDate } }
+    });
+    const completedWithDue = await prisma.task.count({
+      where: {
+        department: { projectId: { in: projectIds } },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        dueDate: { gte: startDate },
+        updatedAt: { gte: startDate }
+      }
+    });
+    const timelineProgress = tasksWithDue > 0 ? Math.round((completedWithDue / tasksWithDue) * 100) : 0;
+
+    const completedRecs = await prisma.task.findMany({
+      where: {
+        department: { projectId: { in: projectIds } },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        updatedAt: { gte: startDate }
+      },
+      select: { updatedAt: true, dueDate: true }
+    });
+    const withDue = completedRecs.filter(t => t.dueDate != null);
+    const onTime = withDue.filter(t => t.updatedAt && t.dueDate && t.updatedAt <= t.dueDate).length;
+    const onTimeRate = withDue.length > 0 ? Math.round((onTime / withDue.length) * 100) : 0;
+
+    const members = await prisma.userRole.findMany({
+      where: { projectId: { in: projectIds } },
+      select: { userId: true }
+    });
+    const memberCount = Array.from(new Set(members.map(m => m.userId))).length || 1;
+    const teamEfficiency = Math.round((completedTasks / memberCount) * 100) / 100;
+
+    const healthScore = Math.round((completionRate * 0.6 + onTimeRate * 0.4));
+    const budgetUtilization = null as number | null; // pending budget model
+
+    const overdueOpen = await prisma.task.count({
+      where: {
+        department: { projectId: { in: projectIds } },
+        status: { notIn: ['COMPLETED', 'APPROVED'] },
+        dueDate: { lt: new Date() }
+      }
+    });
+    const riskAssessment = [
+      { type: 'OVERDUE_OPEN_TASKS', count: overdueOpen, severity: overdueOpen > 25 ? 'HIGH' : overdueOpen > 10 ? 'MEDIUM' : 'LOW' }
+    ];
+
+    const milestoneCompletion: any[] = [];
+
+    res.json({
+      dateRange,
+      granularity,
+      projectIds,
+      metrics: {
+        averageHealthScore: healthScore,
+        totalCompletionRate: completionRate,
+        budgetUtilization,
+        averageTimelineProgress: timelineProgress,
+        commonRisks: riskAssessment,
+        teamEfficiency,
+        milestoneCompletion
+      }
+    });
+  } catch (e) {
+    console.error('all-projects performance error', e);
+    res.status(500).json({ error: 'Failed to fetch all-projects performance' });
+  }
+});
+
+// NEW: All Projects Team Performance (aggregated)
+router.get('/team/all/performance', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    const { dateRange = '30d' } = req.query as any;
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const roles = await prisma.userRole.findMany({ where: { userId: req.user.id }, select: { projectId: true } });
+    const projectIds = Array.from(new Set(roles.map(r => r.projectId)));
+    if (projectIds.length === 0) return res.json({ dateRange, members: [], workloadDistribution: [], completionRates: [], collaboration: [], skills: [], trends: [] });
+
+    const tasks = await prisma.task.findMany({
+      where: {
+        department: { projectId: { in: projectIds } },
+        OR: [ { updatedAt: { gte: startDate } }, { createdAt: { gte: startDate } } ]
+      },
+      select: {
+        id: true, status: true, createdAt: true, updatedAt: true,
+        assignedRoleId: true,
+        assignedRole: { select: { userId: true, role: true } }
+      }
+    });
+
+    const byUser: Record<string, { userId: string, role: string | null, completed: number, inProgress: number, pending: number }>= {};
+    for (const t of tasks) {
+      const uid = t.assignedRole?.userId || 'unassigned';
+      if (!byUser[uid]) byUser[uid] = { userId: uid, role: t.assignedRole?.role || null, completed: 0, inProgress: 0, pending: 0 };
+      if (t.status === 'COMPLETED' || t.status === 'APPROVED') byUser[uid].completed++;
+      else if (t.status === 'IN_PROGRESS') byUser[uid].inProgress++;
+      else byUser[uid].pending++;
+    }
+
+    const members = Object.values(byUser).map(u => ({
+      userId: u.userId,
+      role: u.role,
+      productivityScore: Math.round(Math.min(100, (u.completed / Math.max(1, days)) * 100)),
+      completed: u.completed,
+      inProgress: u.inProgress,
+      pending: u.pending
+    }));
+
+    const workloadDistribution = members.map(u => ({ userId: u.userId, openTasks: u.inProgress + u.pending }));
+    const completionRates = members.map(u => ({ userId: u.userId, completionRate: Math.round((u.completed / Math.max(1, (u.completed + u.inProgress + u.pending))) * 100) }));
+
+    const collaboration: any[] = [];
+    const skills: any[] = [];
+    const trends: any[] = [];
+
+    res.json({ dateRange, members, workloadDistribution, completionRates, collaboration, skills, trends });
+  } catch (e) {
+    console.error('all-projects team performance error', e);
+    res.status(500).json({ error: 'Failed to fetch all-projects team performance' });
+  }
+});
+
 export default router;
 
 // ==========================
