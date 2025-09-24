@@ -48,6 +48,10 @@ app.use(responseOptimizer);
 
 // Apply CORS globally (before routes)
 app.use(corsMiddleware);
+app.options('*', corsMiddleware);
+
+// Trust proxy when behind Railway/Proxies
+app.set('trust proxy', 1);
 
 // Authentication routes (after middleware setup)
 app.use("/api/auth", authRouter);

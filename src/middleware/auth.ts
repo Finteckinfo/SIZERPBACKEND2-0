@@ -10,20 +10,24 @@ const clerk = (createClerkClient as any)({
 	publishableKey: process.env.CLERK_PUBLISHABLE_KEY
 });
 
-// Create JWKS client for RS256 verification
-const client = jwksClient({
-	jwksUri: process.env.CLERK_JWKS_URL || 'https://pumped-sheep-45.clerk.accounts.dev/.well-known/jwks.json'
-});
+// Resolve JWKS per issuer to support multiple Clerk instances if needed
+function getJwksClientForIssuer(issuer: string) {
+    const jwksUri = `${issuer.replace(/\/$/, '')}/.well-known/jwks.json`;
+    return jwksClient({ jwksUri });
+}
 
-function getKey(header: any, callback: any) {
-	client.getSigningKey(header.kid, function(err, key) {
-		if (err) {
-			callback(err);
-			return;
-		}
-		const signingKey = key?.getPublicKey();
-		callback(null, signingKey);
-	});
+function getKeyWithIssuer(issuer: string) {
+    const client = getJwksClientForIssuer(issuer);
+    return function getKey(header: any, callback: any) {
+        client.getSigningKey(header.kid, function(err, key) {
+            if (err) {
+                callback(err);
+                return;
+            }
+            const signingKey = key?.getPublicKey();
+            callback(null, signingKey);
+        });
+    };
 }
 
 // Extend the Express Request interface to include user
@@ -49,108 +53,85 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 
 		const token = authHeader.substring(7);
 
-		try {
-			// Log incoming token for debugging
-			console.log('[Auth] Verifying token with length:', token.length);
-			
-			// Decode token header to check algorithm
-			try {
-				const headerJson = Buffer.from(token.split('.')[0] || '', 'base64').toString('utf8');
-				const header = JSON.parse(headerJson);
-				console.log('[Auth] Token header alg:', header.alg, 'kid:', header.kid);
-			} catch (e) {
-				console.log('[Auth] Could not decode token header');
-			}
+        // 1) Decode payload to get issuer and audience
+        const payloadJson = Buffer.from(token.split('.')[1] || '', 'base64').toString('utf8');
+        let unverified: any;
+        try {
+            unverified = JSON.parse(payloadJson);
+        } catch {
+            return res.status(401).json({ error: 'Invalid token payload' });
+        }
 
-			// Decode token payload (without verification) for debugging
-			try {
-				const payloadJson = Buffer.from(token.split('.')[1] || '', 'base64').toString('utf8');
-				const payload = JSON.parse(payloadJson);
-				console.log('[Auth] Token claims - iss:', payload.iss, 'aud:', payload.aud, 'sub:', payload.sub);
-			} catch (e) {
-				console.log('[Auth] Could not decode token payload');
-			}
+        const tokenIssuer = (unverified?.iss || '').replace(/\/$/, '');
+        const expectedIssuer = (process.env.CLERK_ISSUER_URL || '').replace(/\/$/, '');
+        if (!tokenIssuer || (expectedIssuer && tokenIssuer !== expectedIssuer)) {
+            return res.status(401).json({ error: 'Issuer mismatch' });
+        }
 
-			// Get verification options from environment
-			const jwksUrl = process.env.CLERK_JWKS_URL;
-			const issuer = process.env.CLERK_ISSUER_URL;
-			const audience = process.env.CLERK_AUDIENCE;
+        // Audience allowlist: env audience plus any additional allowed values
+        const envAudience = (process.env.CLERK_AUDIENCE || '').replace(/\/$/, '');
+        const allowedAudiences = new Set<string>([
+            envAudience,
+            'https://sizerpbackend2-0-production.up.railway.app'
+        ].filter(Boolean));
 
-			console.log('[Auth] Verification config:', { 
-				jwksUrl: jwksUrl ? 'configured' : 'missing',
-				issuer: issuer ? 'configured' : 'missing', 
-				audience: audience ? 'configured' : 'missing'
-			});
+        // 2) Verify signature via JWKS for that issuer
+        try {
+            const decoded = await new Promise((resolve, reject) => {
+                jwt.verify(token, getKeyWithIssuer(tokenIssuer), {
+                    issuer: tokenIssuer,
+                    audience: Array.from(allowedAudiences) as [string, ...string[]],
+                    algorithms: ['RS256'],
+                    clockTolerance: 90
+                }, (err: any, decoded: any) => {
+                    if (err) return reject(err);
+                    resolve(decoded);
+                });
+            });
 
-			if (!jwksUrl) {
-				console.error('CLERK_JWKS_URL not configured');
-				return res.status(500).json({ error: 'Authentication configuration error' });
-			}
+            // 3) Extract claims
+            const userId = (decoded as any).sub || (decoded as any).user_id;
+            const email = (decoded as any).email;
+            const firstName = (decoded as any).first_name || (decoded as any).given_name;
+            const lastName = (decoded as any).last_name || (decoded as any).family_name;
 
-			// Verify token using JWKS (RS256)
-			const decoded = await new Promise((resolve, reject) => {
-				jwt.verify(token, getKey, {
-					issuer: process.env.CLERK_ISSUER_URL,
-					audience: process.env.CLERK_AUDIENCE,
-					algorithms: ['RS256'],
-					clockTolerance: 30
-				}, (err, decoded) => {
-					if (err) {
-						reject(err);
-					} else {
-						resolve(decoded);
-					}
-				});
-			});
+            if (!userId || !email) {
+                return res.status(401).json({ error: 'Invalid token payload' });
+            }
 
-			console.log('[Auth] Token verification successful');
+            // 4) DB user sync (separate error handling -> not 401)
+            try {
+                let dbUser = await prisma.user.findUnique({
+                    where: { email },
+                    select: { id: true, email: true, firstName: true, lastName: true }
+                });
 
-			// Extract user information with proper type handling
-			const userId = (decoded as any).sub || (decoded as any).user_id;
-			const email = (decoded as any).email;
-			const firstName = (decoded as any).first_name || (decoded as any).given_name;
-			const lastName = (decoded as any).last_name || (decoded as any).family_name;
+                if (!dbUser) {
+                    dbUser = await prisma.user.create({
+                        data: {
+                            id: userId,
+                            email,
+                            firstName: firstName || null,
+                            lastName: lastName || null
+                        },
+                        select: { id: true, email: true, firstName: true, lastName: true }
+                    });
+                }
 
-			if (!userId || !email) {
-				console.error('Token missing required claims:', { userId, email });
-				return res.status(401).json({ error: 'Invalid token payload' });
-			}
+                req.user = {
+                    id: dbUser.id,
+                    email: dbUser.email,
+                    firstName: dbUser.firstName || undefined,
+                    lastName: dbUser.lastName || undefined
+                };
+            } catch (dbErr) {
+                return res.status(503).json({ error: 'Service unavailable', details: 'Database error' });
+            }
 
-			// Ensure user exists in our DB
-			let dbUser = await prisma.user.findUnique({
-				where: { email },
-				select: { id: true, email: true, firstName: true, lastName: true }
-			});
-
-			if (!dbUser) {
-				// Create user on first login
-				dbUser = await prisma.user.create({
-					data: {
-						id: userId,
-						email,
-						firstName: firstName || null,
-						lastName: lastName || null
-					},
-					select: { id: true, email: true, firstName: true, lastName: true }
-				});
-				console.log('[Auth] Created new user:', dbUser.id);
-			}
-
-			req.user = {
-				id: dbUser.id,
-				email: dbUser.email,
-				firstName: dbUser.firstName || undefined,
-				lastName: dbUser.lastName || undefined
-			};
-
-			return next();
-		} catch (err) {
-			console.error('[Auth] Token verification failed:', err);
-			return res.status(401).json({ 
-				error: 'Invalid or expired token',
-				...(process.env.NODE_ENV !== 'production' ? { details: (err as any)?.message } : {})
-			});
-		}
+            return next();
+        } catch (verifyErr) {
+            return res.status(401).json({ error: 'Invalid or expired token' });
+        }
 	} catch (error) {
 		console.error('[Auth] Middleware fatal error:', error);
 		return res.status(500).json({ error: 'Authentication failed' });
