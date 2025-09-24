@@ -869,36 +869,95 @@ router.get('/team/performance', authenticateToken, async (req: Request, res: Res
 
 router.get('/financial/overview', authenticateToken, async (req: Request, res: Response) => {
   try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
     const { projectId, dateRange = '30d', currency = 'USD' } = req.query as any;
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+
+    const access = await checkProjectAccess(req.user.id, projectId);
+    if (!access.hasAccess) return res.status(403).json({ error: 'Access denied to this project' });
+
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Without budget/expense schema, compute operational proxies
+    const totalTasks = await prisma.task.count({ where: { department: { projectId }, createdAt: { gte: startDate } } });
+    const completedTasks = await prisma.task.count({ where: { department: { projectId }, status: { in: ['COMPLETED','APPROVED'] }, updatedAt: { gte: startDate } } });
+
+    const costPerTask = null as number | null; // pending expense model
+    const budgetUtilization = null as number | null; // pending budget model
+    const roi = null as number | null; // pending revenue/savings model
+    const expenseBreakdown: any[] = []; // pending expense categories
+    const profitMargins = null as number | null; // pending revenue model
+    const payments: any[] = []; // pending payments model
+
+    // Simple projection: linear based on last period throughput
+    const throughputPerDay = days > 0 ? completedTasks / days : 0;
+    const projections = [{ metric: 'throughputPerDay', value: Math.round(throughputPerDay * 100) / 100, currency }];
+
     res.json({
       filters: { projectId, dateRange, currency },
-      budgetUtilization: 0,
-      costPerTask: 0,
-      roi: 0,
-      expenseBreakdown: [],
-      profitMargins: 0,
-      payments: [],
-      projections: []
+      budgetUtilization,
+      costPerTask,
+      roi,
+      expenseBreakdown,
+      profitMargins,
+      payments,
+      projections
     });
   } catch (e) {
+    console.error('financial overview error', e);
     res.status(500).json({ error: 'Failed to fetch financial overview' });
   }
 });
 
 router.get('/timeline/analysis', authenticateToken, async (req: Request, res: Response) => {
   try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
     const { projectId, dateRange = '30d' } = req.query as any;
-    res.json({
-      projectId,
-      dateRange,
-      milestones: [],
-      deadlineAdherence: 0,
-      scheduleVariance: 0,
-      criticalPath: [],
-      risks: [],
-      deliveryPredictions: []
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+
+    const access = await checkProjectAccess(req.user.id, projectId);
+    if (!access.hasAccess) return res.status(403).json({ error: 'Access denied to this project' });
+
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const completed = await prisma.task.findMany({
+      where: { department: { projectId }, status: { in: ['COMPLETED','APPROVED'] }, updatedAt: { gte: startDate } },
+      select: { createdAt: true, updatedAt: true, dueDate: true }
     });
+    const withDue = completed.filter(t => t.dueDate);
+    const onTime = withDue.filter(t => t.updatedAt && t.dueDate && t.updatedAt <= t.dueDate);
+    const deadlineAdherence = withDue.length > 0 ? Math.round((onTime.length / withDue.length) * 100) : 0;
+
+    // Schedule variance: avg(actual duration - planned duration) for tasks with dueDate
+    let varianceSum = 0; let varianceCount = 0;
+    for (const t of withDue) {
+      const actual = (t.updatedAt?.getTime() || t.createdAt.getTime()) - t.createdAt.getTime();
+      const planned = (t.dueDate!.getTime() - t.createdAt.getTime());
+      varianceSum += (actual - planned);
+      varianceCount++;
+    }
+    const scheduleVariance = varianceCount > 0 ? Math.round((varianceSum / varianceCount) / (1000*60*60*24) * 100) / 100 : 0; // in days
+
+    const overdueOpen = await prisma.task.count({ where: { department: { projectId }, status: { notIn: ['COMPLETED','APPROVED'] }, dueDate: { lt: new Date() } } });
+    const risks = [{ type: 'OVERDUE_OPEN_TASKS', count: overdueOpen, severity: overdueOpen > 10 ? 'HIGH' : overdueOpen > 3 ? 'MEDIUM' : 'LOW' }];
+
+    // Critical path & milestones: placeholders (no explicit dependency/milestone model)
+    const criticalPath: any[] = [];
+    const milestones: any[] = [];
+
+    // Delivery predictions: naive estimate using current throughput and remaining open tasks
+    const openTasks = await prisma.task.count({ where: { department: { projectId }, status: { notIn: ['COMPLETED','APPROVED'] } } });
+    const throughputPerDay = days > 0 ? (completed.length / days) : 0;
+    const etaDays = throughputPerDay > 0 ? Math.ceil(openTasks / throughputPerDay) : null;
+    const deliveryPredictions = [{ metric: 'etaDays', value: etaDays }];
+
+    res.json({ projectId, dateRange, milestones, deadlineAdherence, scheduleVariance, criticalPath, risks, deliveryPredictions });
   } catch (e) {
+    console.error('timeline analysis error', e);
     res.status(500).json({ error: 'Failed to fetch timeline analysis' });
   }
 });
@@ -988,10 +1047,43 @@ router.get('/benchmarks/comparison', authenticateToken, async (req: Request, res
 // REAL-TIME & LIVE
 router.get('/live/dashboard', authenticateToken, async (req: Request, res: Response) => {
   try {
-    const projectIds = ([] as string[]).concat(req.query.projectIds as any || []);
-    const { userId } = req.query as any;
-    res.json({ userId, projectIds, status: [], activeTasks: [], teamOnline: [], systemHealth: [], alerts: [], productivity: [] });
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    const requested = ([] as string[]).concat(req.query.projectIds as any || []);
+
+    const roles = await prisma.userRole.findMany({ where: { userId: req.user.id }, select: { projectId: true } });
+    let projectIds = Array.from(new Set(roles.map(r => r.projectId)));
+    if (requested.length > 0) projectIds = projectIds.filter(id => requested.includes(id));
+
+    // Status counts
+    const statusCounts = await prisma.task.groupBy({
+      by: ['status'],
+      where: { department: { projectId: { in: projectIds } } },
+      _count: { _all: true }
+    });
+    const status = statusCounts.map(s => ({ status: s.status, count: (s as any)._count._all }));
+
+    // Active tasks list minimal (ids only) to keep payload light
+    const activeTasks = await prisma.task.findMany({
+      where: { department: { projectId: { in: projectIds } }, status: { in: ['PENDING','IN_PROGRESS'] } },
+      select: { id: true, status: true }
+    });
+
+    // Alerts from overdue tasks
+    const overdue = await prisma.task.count({ where: { department: { projectId: { in: projectIds } }, status: { notIn: ['COMPLETED','APPROVED'] }, dueDate: { lt: new Date() } } });
+    const alerts = overdue > 0 ? [{ type: 'DEADLINE', severity: overdue > 25 ? 'HIGH' : overdue > 10 ? 'MEDIUM' : 'LOW', count: overdue }] : [];
+
+    // Productivity snapshot
+    const start = new Date(); start.setDate(start.getDate() - 7);
+    const completed7 = await prisma.task.count({ where: { department: { projectId: { in: projectIds } }, status: { in: ['COMPLETED','APPROVED'] }, updatedAt: { gte: start } } });
+    const productivity = [{ metric: 'throughput7d', value: completed7 }];
+
+    // teamOnline and systemHealth not tracked → placeholders
+    const teamOnline: any[] = [];
+    const systemHealth = [{ service: 'db', status: 'unknown' }];
+
+    res.json({ userId: req.user.id, projectIds, status, activeTasks, teamOnline, systemHealth, alerts, productivity });
   } catch (e) {
+    console.error('live dashboard error', e);
     res.status(500).json({ error: 'Failed to fetch live dashboard' });
   }
 });
