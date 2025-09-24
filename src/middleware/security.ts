@@ -20,6 +20,8 @@ export const corsMiddleware = cors({
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Authorization", "Content-Type"],
   credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 200
 });
 
 export const securityMiddleware = [
