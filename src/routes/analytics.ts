@@ -426,3 +426,550 @@ router.get('/kanban/all-projects/metrics', authenticateToken, async (req: Reques
 });
 
 export default router;
+
+// ==========================
+// Additional Analytics APIs
+// These are lightweight MVP stubs to unblock frontend integration.
+// Replace placeholder calculations with real queries once DB is active.
+// ==========================
+
+// CORE ANALYTICS
+router.get('/dashboard/overview', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+
+    const { dateRange = '30d' } = req.query as any;
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Find projects the user can access
+    const userRoles = await prisma.userRole.findMany({
+      where: { userId: req.user.id },
+      select: { projectId: true, userId: true }
+    });
+    const accessibleProjectIds = Array.from(new Set(userRoles.map(r => r.projectId)));
+
+    // Totals
+    const totalProjects = accessibleProjectIds.length;
+
+    // Completed tasks in range across accessible projects
+    const completedTasksCount = await prisma.task.count({
+      where: {
+        department: { projectId: { in: accessibleProjectIds } },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        // Use updatedAt as completion proxy within range
+        updatedAt: { gte: startDate }
+      }
+    });
+
+    // Active projects: projects that have at least one non-completed task
+    let activeProjects = 0;
+    if (accessibleProjectIds.length > 0) {
+      const activeCounts = await prisma.task.groupBy({
+        by: ['departmentId'],
+        where: {
+          department: { projectId: { in: accessibleProjectIds } },
+          status: { notIn: ['COMPLETED', 'APPROVED'] }
+        },
+        _count: { _all: true }
+      });
+      const departmentIdsWithActive = new Set(activeCounts.map(g => g.departmentId));
+      const departments = await prisma.department.findMany({
+        where: { id: { in: Array.from(departmentIdsWithActive) } },
+        select: { projectId: true }
+      });
+      const projectIdsWithActive = new Set(departments.map(d => d.projectId));
+      activeProjects = Array.from(projectIdsWithActive).length;
+    }
+
+    // Team members: distinct users with roles in accessible projects
+    const teamUsers = await prisma.userRole.findMany({
+      where: { projectId: { in: accessibleProjectIds } },
+      select: { userId: true }
+    });
+    const teamMembers = Array.from(new Set(teamUsers.map(u => u.userId))).length;
+
+    // Productivity score (simple): throughput per day vs target (target 5/day)
+    const throughputPerDay = days > 0 ? completedTasksCount / days : 0;
+    const productivity = Math.max(0, Math.min(100, Math.round((throughputPerDay / 5) * 100)));
+
+    // Timeline adherence: percent of completed tasks completed on/before dueDate (if set)
+    const completedTasks = await prisma.task.findMany({
+      where: {
+        department: { projectId: { in: accessibleProjectIds } },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        updatedAt: { gte: startDate }
+      },
+      select: { updatedAt: true, dueDate: true }
+    });
+    const withDue = completedTasks.filter(t => t.dueDate != null);
+    const onTime = withDue.filter(t => t.updatedAt && t.dueDate && t.updatedAt <= t.dueDate);
+    const timelineAdherence = withDue.length > 0 ? Math.round((onTime.length / withDue.length) * 100) : 0;
+
+    // Budget utilization: unknown without budget data → null
+    const budgetUtilization: number | null = null;
+
+    return res.json({
+      filters: { userId: req.user.id, dateRange, projectIds: accessibleProjectIds },
+      totals: {
+        totalProjects,
+        activeProjects,
+        completedTasks: completedTasksCount,
+        teamMembers
+      },
+      scores: {
+        productivity,
+        budgetUtilization,
+        timelineAdherence
+      }
+    });
+  } catch (e) {
+    console.error('overview error', e);
+    res.status(500).json({ error: 'Failed to fetch overview' });
+  }
+});
+
+router.get('/projects/performance', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    const { projectId, dateRange = '30d', granularity = 'weekly' } = req.query as any;
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+
+    // Access check
+    const access = await checkProjectAccess(req.user.id, projectId);
+    if (!access.hasAccess) return res.status(403).json({ error: 'Access denied to this project' });
+
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Total and completed tasks in range
+    const totalTasks = await prisma.task.count({
+      where: { department: { projectId }, createdAt: { gte: startDate } }
+    });
+    const completedTasks = await prisma.task.count({
+      where: {
+        department: { projectId },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        updatedAt: { gte: startDate }
+      }
+    });
+    const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+    // Timeline progress: completed vs tasks with due dates in range
+    const tasksWithDue = await prisma.task.count({
+      where: { department: { projectId }, dueDate: { gte: startDate } }
+    });
+    const completedWithDue = await prisma.task.count({
+      where: {
+        department: { projectId },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        dueDate: { gte: startDate },
+        updatedAt: { gte: startDate }
+      }
+    });
+    const timelineProgress = tasksWithDue > 0 ? Math.round((completedWithDue / tasksWithDue) * 100) : 0;
+
+    // On-time percentage
+    const completedRecords = await prisma.task.findMany({
+      where: {
+        department: { projectId },
+        status: { in: ['COMPLETED', 'APPROVED'] },
+        updatedAt: { gte: startDate }
+      },
+      select: { updatedAt: true, dueDate: true }
+    });
+    const withDue = completedRecords.filter(t => t.dueDate != null);
+    const onTime = withDue.filter(t => t.updatedAt && t.dueDate && t.updatedAt <= t.dueDate).length;
+    const onTimeRate = withDue.length > 0 ? Math.round((onTime / withDue.length) * 100) : 0;
+
+    // Team efficiency: completed per active member (distinct users with roles)
+    const projectMembers = await prisma.userRole.findMany({
+      where: { projectId },
+      select: { userId: true }
+    });
+    const memberCount = Array.from(new Set(projectMembers.map(m => m.userId))).length || 1;
+    const teamEfficiency = Math.round((completedTasks / memberCount) * 100) / 100;
+
+    // Health score: blend of completion and on-time
+    const healthScore = Math.round((completionRate * 0.6 + onTimeRate * 0.4));
+
+    // Budget vs actual: no budget fields yet → nulls
+    const budgetVsActual = { budget: null as number | null, actual: null as number | null };
+
+    // Risk assessment: simple heuristics
+    const overdueOpen = await prisma.task.count({
+      where: {
+        department: { projectId },
+        status: { notIn: ['COMPLETED', 'APPROVED'] },
+        dueDate: { lt: new Date() }
+      }
+    });
+    const riskAssessment = [
+      { type: 'OVERDUE_OPEN_TASKS', count: overdueOpen, severity: overdueOpen > 10 ? 'HIGH' : overdueOpen > 3 ? 'MEDIUM' : 'LOW' }
+    ];
+
+    // Milestone completion: placeholder (no Milestone model yet)
+    const milestoneCompletion: any[] = [];
+
+    return res.json({
+      projectId,
+      dateRange,
+      granularity,
+      metrics: {
+        healthScore,
+        completionRate,
+        budgetVsActual,
+        timelineProgress,
+        riskAssessment,
+        teamEfficiency,
+        milestoneCompletion
+      }
+    });
+  } catch (e) {
+    console.error('project performance error', e);
+    res.status(500).json({ error: 'Failed to fetch project performance' });
+  }
+});
+
+router.get('/team/performance', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+    const { projectId, departmentId, userId, dateRange = '30d' } = req.query as any;
+    if (!projectId) return res.status(400).json({ error: 'projectId is required' });
+
+    const access = await checkProjectAccess(req.user.id, projectId);
+    if (!access.hasAccess) return res.status(403).json({ error: 'Access denied to this project' });
+
+    const days = parseInt(dateRange.toString().replace('d', '')) || 30;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Scope filters
+    const taskWhere: any = {
+      department: { projectId },
+      OR: [
+        { updatedAt: { gte: startDate } },
+        { createdAt: { gte: startDate } }
+      ]
+    };
+    if (departmentId) taskWhere.departmentId = departmentId;
+    if (userId) taskWhere.assignedRole = { userId } as any; // via relation on UserRole if available
+
+    // Pull tasks with assignedRole for attribution
+    const tasks = await prisma.task.findMany({
+      where: taskWhere,
+      select: {
+        id: true, status: true, createdAt: true, updatedAt: true, dueDate: true,
+        assignedRoleId: true,
+        assignedRole: { select: { id: true, userId: true, role: true } }
+      }
+    });
+
+    // Aggregate by userId
+    const byUser: Record<string, { userId: string, role: string | null, completed: number, inProgress: number, pending: number }>
+      = {};
+    for (const t of tasks) {
+      const uid = t.assignedRole?.userId || 'unassigned';
+      if (!byUser[uid]) byUser[uid] = { userId: uid, role: t.assignedRole?.role || null as any, completed: 0, inProgress: 0, pending: 0 };
+      if (t.status === 'COMPLETED' || t.status === 'APPROVED') byUser[uid].completed++;
+      else if (t.status === 'IN_PROGRESS') byUser[uid].inProgress++;
+      else byUser[uid].pending++;
+    }
+
+    const individuals = Object.values(byUser).map(u => ({
+      userId: u.userId,
+      role: u.role,
+      productivityScore: Math.round(Math.min(100, (u.completed / Math.max(1, days)) * 100)),
+      completed: u.completed,
+      inProgress: u.inProgress,
+      pending: u.pending
+    }));
+
+    const workloadDistribution = individuals.map(u => ({ userId: u.userId, openTasks: u.inProgress + u.pending }));
+    const taskCompletionRates = individuals.map(u => ({ userId: u.userId, completionRate: Math.round((u.completed / Math.max(1, (u.completed + u.inProgress + u.pending))) * 100) }));
+
+    // Placeholders for collaboration and skills
+    const collaboration: any[] = [];
+    const skillUtilization: any[] = [];
+
+    // Trends: completed per day (simple)
+    const trends: any[] = [];
+
+    return res.json({
+      filters: { projectId, departmentId, userId, dateRange },
+      individuals,
+      workloadDistribution,
+      taskCompletionRates,
+      collaboration,
+      skillUtilization,
+      trends
+    });
+  } catch (e) {
+    console.error('team performance error', e);
+    res.status(500).json({ error: 'Failed to fetch team performance' });
+  }
+});
+
+router.get('/financial/overview', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, dateRange = '30d', currency = 'USD' } = req.query as any;
+    res.json({
+      filters: { projectId, dateRange, currency },
+      budgetUtilization: 0,
+      costPerTask: 0,
+      roi: 0,
+      expenseBreakdown: [],
+      profitMargins: 0,
+      payments: [],
+      projections: []
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch financial overview' });
+  }
+});
+
+router.get('/timeline/analysis', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, dateRange = '30d' } = req.query as any;
+    res.json({
+      projectId,
+      dateRange,
+      milestones: [],
+      deadlineAdherence: 0,
+      scheduleVariance: 0,
+      criticalPath: [],
+      risks: [],
+      deliveryPredictions: []
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch timeline analysis' });
+  }
+});
+
+// DEPARTMENT & RESOURCE
+router.get('/departments/efficiency', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, dateRange = '30d' } = req.query as any;
+    res.json({
+      projectId,
+      dateRange,
+      departmentComparison: [],
+      resourceUtilization: [],
+      bottlenecks: [],
+      capacity: [],
+      workload: []
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch department efficiency' });
+  }
+});
+
+router.get('/resources/utilization', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, resourceType = 'human' } = req.query as any;
+    res.json({
+      projectId,
+      resourceType,
+      capacityVsDemand: [],
+      utilizationRates: [],
+      optimization: [],
+      allocationEfficiency: 0,
+      costPerResource: 0
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch resource utilization' });
+  }
+});
+
+router.get('/workload/distribution', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, teamId, dateRange = '30d' } = req.query as any;
+    res.json({
+      projectId,
+      teamId,
+      dateRange,
+      distribution: [],
+      capacityPlanning: [],
+      workloadBalancing: [],
+      overtime: [],
+      productivity: []
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch workload distribution' });
+  }
+});
+
+// TREND & PREDICTIVE
+router.get('/trends/analysis', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const projectIds = ([] as string[]).concat(req.query.projectIds as any || []);
+    const { metricType, dateRange = '90d', granularity = 'weekly' } = req.query as any;
+    res.json({ metricType, dateRange, granularity, projectIds, trends: [], comparisons: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch trend analysis' });
+  }
+});
+
+router.get('/predictions/forecast', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, predictionType = 'completion', horizon = '90d' } = req.query as any;
+    res.json({ projectId, predictionType, horizon, predictions: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch predictions' });
+  }
+});
+
+router.get('/benchmarks/comparison', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, benchmarkType = 'historical' } = req.query as any;
+    res.json({ projectId, benchmarkType, benchmarks: [], rankings: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch benchmarks' });
+  }
+});
+
+// REAL-TIME & LIVE
+router.get('/live/dashboard', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const projectIds = ([] as string[]).concat(req.query.projectIds as any || []);
+    const { userId } = req.query as any;
+    res.json({ userId, projectIds, status: [], activeTasks: [], teamOnline: [], systemHealth: [], alerts: [], productivity: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch live dashboard' });
+  }
+});
+
+router.get('/activity/feed', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { userId, projectId, activityType, limit = 20, offset = 0 } = req.query as any;
+    res.json({ userId, projectId, activityType, limit: Number(limit), offset: Number(offset), activities: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch activity feed' });
+  }
+});
+
+router.get('/alerts/active', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { userId, alertType, severity } = req.query as any;
+    res.json({ userId, alertType, severity, alerts: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch alerts' });
+  }
+});
+
+// USER-SPECIFIC
+router.get('/users/:userId/performance', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const metrics = ([] as string[]).concat(req.query.metrics as any || []);
+    const { dateRange = '30d' } = req.query as any;
+    res.json({ userId, dateRange, metrics, performance: {}, ranking: {}, goals: {}, achievements: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch user performance' });
+  }
+});
+
+router.get('/users/:userId/dashboard', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const { viewType = 'personal' } = req.query as any;
+    res.json({ userId, viewType, metrics: {}, kpis: {}, quickActions: [], recentActivity: [], upcomingDeadlines: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch user dashboard' });
+  }
+});
+
+// ADVANCED
+router.get('/bottlenecks/analysis', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, dateRange = '30d', severity } = req.query as any;
+    res.json({ projectId, dateRange, severity, bottlenecks: [], impact: [], recommendations: [], prevention: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch bottleneck analysis' });
+  }
+});
+
+router.get('/quality/metrics', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, dateRange = '30d', qualityType } = req.query as any;
+    res.json({ projectId, dateRange, qualityType, taskQuality: [], revisions: [], approvalTimes: [], defects: [], trends: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch quality metrics' });
+  }
+});
+
+router.get('/collaboration/metrics', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { projectId, teamId, dateRange = '30d' } = req.query as any;
+    res.json({ projectId, teamId, dateRange, communication: [], crossTeam: [], knowledgeSharing: [], meetings: [], patterns: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch collaboration metrics' });
+  }
+});
+
+router.get('/reports/custom', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { reportId, dateRange = '30d' } = req.query as any;
+    res.json({ reportId, dateRange, data: {}, meta: {} });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch custom report' });
+  }
+});
+
+router.post('/reports/export', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { reportType, filters, format = 'CSV', email } = req.body || {};
+    res.json({ status: 'queued', reportType, format, email, downloadLink: null, progress: 0 });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to export report' });
+  }
+});
+
+router.post('/dashboards/share', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { dashboardId, shareType = 'link', recipients = [], permissions = [] } = req.body || {};
+    res.json({ shareLink: 'pending', permissions, recipients, expiration: null, usage: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to share dashboard' });
+  }
+});
+
+// CONFIGURATION
+router.get('/config/settings', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { userId, configType } = req.query as any;
+    res.json({ userId, configType, preferences: {}, layouts: [], metricConfigs: [], alertSettings: [], views: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch analytics config' });
+  }
+});
+
+router.get('/widgets/config', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { dashboardId, widgetType } = req.query as any;
+    res.json({ dashboardId, widgetType, widgets: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch widget config' });
+  }
+});
+
+// PERFORMANCE
+router.get('/cache/status', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { cacheType, metricType } = req.query as any;
+    res.json({ cacheType, metricType, status: {}, hitRates: {}, schedules: [], recommendations: [], perf: {} });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch cache status' });
+  }
+});
+
+router.get('/data/freshness', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { dataType, source } = req.query as any;
+    res.json({ dataType, source, lastUpdate: null, staleness: null, schedules: [], realtime: false, sync: {} });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch data freshness' });
+  }
+});
