@@ -29,6 +29,7 @@ import roleAwareRouter from "./routes/role-aware.js";
 import analyticsRouter from "./routes/analytics.js";
 import { initializeWebSocket } from "./services/websocket.js";
 import { createServer } from 'http';
+import { connectRedis, disconnectRedis } from "./services/redis.js";
 
 dotenv.config();
 const app = express();
@@ -113,12 +114,44 @@ app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRout
 // User routes with rate limiting and query optimization
 app.use("/api/user", rateLimiter(200, 60000), queryOptimizer, userRouter);
 
+// Redis healthcheck
+import { getRedisClient } from "./services/redis.js";
+app.get('/health/redis', async (req, res) => {
+	try {
+		const pong = await getRedisClient().ping();
+		return res.json({ status: 'ok', pong });
+	} catch (e: any) {
+		return res.status(500).json({ status: 'error', message: e.message });
+	}
+});
+
 const PORT = process.env.PORT || 3000;
 const server = createServer(app);
 
-// Initialize WebSocket server
-initializeWebSocket(server);
+// Connect to Redis, then start server
+(async () => {
+	try {
+		await connectRedis();
+		initializeWebSocket(server);
+		server.listen(PORT, () => {
+			console.log(`[Server] HTTP and WebSocket server running on port ${PORT}`);
+		});
+	} catch (err) {
+		console.error('[Server] Failed to start due to Redis error:', err);
+		process.exit(1);
+	}
+})();
 
-server.listen(PORT, () => {
-  console.log(`[Server] HTTP and WebSocket server running on port ${PORT}`);
-});
+// Graceful shutdown
+const shutdown = async () => {
+	console.log('[Server] Shutting down...');
+	try {
+		await disconnectRedis();
+	} catch (e) {
+		console.error('[Server] Error during shutdown:', e);
+	} finally {
+		process.exit(0);
+	}
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
