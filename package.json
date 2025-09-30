@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "nodemon --watch 'src/**/*.ts' --exec node --loader ts-node/esm src/index.ts",
     "start": "node dist/index.js",
-    "build": "tsc"
+    "build": "tsc",
+    "redis:ping": "node -e \"import('redis').then(async m=>{const c=m.createClient({url:process.env.REDIS_URL||process.env.RAILWAY_REDIS_URL});c.on('error',e=>console.error(e));await c.connect();console.log(await c.ping());await c.quit();})\"",
+    "redis:seed": "node -e \"import('./dist/scripts/redis-seed.js').then(m=>m.default && m.default())\""
   },
   "keywords": [],
   "author": "",

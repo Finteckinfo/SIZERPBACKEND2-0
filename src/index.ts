@@ -27,6 +27,7 @@ import userRolesRouter from "./routes/user-roles.js";
 import tasksRouter from "./routes/tasks.js";
 import roleAwareRouter from "./routes/role-aware.js";
 import analyticsRouter from "./routes/analytics.js";
+import chatRouter from "./routes/chat.js";
 import { initializeWebSocket } from "./services/websocket.js";
 import { createServer } from 'http';
 import { connectRedis, disconnectRedis } from "./services/redis.js";
@@ -107,6 +108,7 @@ app.use("/api/role-aware", roleAwareRouter);
 
 // Analytics routes
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/chat", chatRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);
