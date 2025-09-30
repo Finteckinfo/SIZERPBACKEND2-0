@@ -9,7 +9,7 @@ export function getRedisClient() {
 
 		redisClient = createClient({ url });
 
-		redisClient.on('error', (err) => {
+    redisClient.on('error', (err: unknown) => {
 			console.error('[Redis] Client Error:', err);
 		});
 	}
