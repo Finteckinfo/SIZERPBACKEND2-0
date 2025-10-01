@@ -5,8 +5,6 @@ import { storeMessage, fetchMessages, startTyping, stopTyping, getTypingUsers, g
 
 const router = Router();
 
-router.use(authenticateToken);
-
 // Helper: ensure participant
 async function assertParticipant(roomId: string, userId: string) {
 	const p = await (prisma as any).chatParticipant?.findFirst?.({ where: { roomId, userId } });
@@ -14,7 +12,7 @@ async function assertParticipant(roomId: string, userId: string) {
 }
 
 // GET rooms current user participates in
-router.get('/rooms', async (req, res) => {
+router.get('/rooms', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const rooms = await (prisma as any).chatParticipant?.findMany?.({
@@ -32,7 +30,7 @@ router.get('/rooms', async (req, res) => {
 });
 
 // GET messages for a room
-router.get('/rooms/:roomId/messages', async (req, res) => {
+router.get('/rooms/:roomId/messages', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -48,7 +46,7 @@ router.get('/rooms/:roomId/messages', async (req, res) => {
 });
 
 // POST send a message
-router.post('/rooms/:roomId/messages', async (req, res) => {
+router.post('/rooms/:roomId/messages', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -76,7 +74,7 @@ router.post('/rooms/:roomId/messages', async (req, res) => {
 });
 
 // Presence: join/leave, online list
-router.post('/rooms/:roomId/join', async (req, res) => {
+router.post('/rooms/:roomId/join', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -86,7 +84,7 @@ router.post('/rooms/:roomId/join', async (req, res) => {
 	} catch (e: any) { return res.status(e.status || 500).json({ error: e.message }); }
 });
 
-router.post('/rooms/:roomId/leave', async (req, res) => {
+router.post('/rooms/:roomId/leave', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -96,7 +94,7 @@ router.post('/rooms/:roomId/leave', async (req, res) => {
 	} catch (e: any) { return res.status(e.status || 500).json({ error: e.message }); }
 });
 
-router.get('/rooms/:roomId/online', async (req, res) => {
+router.get('/rooms/:roomId/online', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -107,7 +105,7 @@ router.get('/rooms/:roomId/online', async (req, res) => {
 });
 
 // Typing
-router.post('/rooms/:roomId/typing/start', async (req, res) => {
+router.post('/rooms/:roomId/typing/start', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -117,7 +115,7 @@ router.post('/rooms/:roomId/typing/start', async (req, res) => {
 	} catch (e: any) { return res.status(e.status || 500).json({ error: e.message }); }
 });
 
-router.post('/rooms/:roomId/typing/stop', async (req, res) => {
+router.post('/rooms/:roomId/typing/stop', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -127,7 +125,7 @@ router.post('/rooms/:roomId/typing/stop', async (req, res) => {
 	} catch (e: any) { return res.status(e.status || 500).json({ error: e.message }); }
 });
 
-router.get('/rooms/:roomId/typing', async (req, res) => {
+router.get('/rooms/:roomId/typing', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -138,7 +136,7 @@ router.get('/rooms/:roomId/typing', async (req, res) => {
 });
 
 // Unread counters
-router.get('/rooms/:roomId/unread', async (req, res) => {
+router.get('/rooms/:roomId/unread', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -148,7 +146,7 @@ router.get('/rooms/:roomId/unread', async (req, res) => {
 	} catch (e: any) { return res.status(e.status || 500).json({ error: e.message }); }
 });
 
-router.post('/rooms/:roomId/unread/reset', async (req, res) => {
+router.post('/rooms/:roomId/unread/reset', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId } = req.params;
@@ -159,7 +157,7 @@ router.post('/rooms/:roomId/unread/reset', async (req, res) => {
 });
 
 // Reactions
-router.post('/rooms/:roomId/messages/:messageId/reactions', async (req, res) => {
+router.post('/rooms/:roomId/messages/:messageId/reactions', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId, messageId } = req.params;
@@ -171,7 +169,7 @@ router.post('/rooms/:roomId/messages/:messageId/reactions', async (req, res) => 
 	} catch (e: any) { return res.status(e.status || 500).json({ error: e.message }); }
 });
 
-router.delete('/rooms/:roomId/messages/:messageId/reactions', async (req, res) => {
+router.delete('/rooms/:roomId/messages/:messageId/reactions', authenticateToken, async (req, res) => {
 	try {
 		const userId = req.user!.id;
 		const { roomId, messageId } = req.params;
