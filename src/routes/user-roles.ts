@@ -28,7 +28,8 @@ router.get('/project/:projectId/user/:userId', authenticateToken, async (req: Re
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const userRole = await prisma.userRole.findFirst({
+    // First check UserRole table
+    let userRole = await prisma.userRole.findFirst({
       where: {
         userId: userId,
         projectId: projectId
@@ -54,7 +55,48 @@ router.get('/project/:projectId/user/:userId', authenticateToken, async (req: Re
       }
     });
 
+    // If not found in UserRole table, check if user is project owner
     if (!userRole) {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { ownerId: true }
+      });
+
+      if (project && project.ownerId === userId) {
+        // User is the project owner - fetch user details and create response
+        const user = await prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            avatarUrl: true
+          }
+        });
+
+        if (user) {
+          // Return owner role even though no UserRole record exists
+          const ownerRole = {
+            id: `owner_${projectId}_${userId}`, // Synthetic ID
+            userId: userId,
+            projectId: projectId,
+            role: 'PROJECT_OWNER',
+            status: 'ACTIVE',
+            acceptedAt: new Date(),
+            inviteId: null,
+            departmentOrder: [],
+            departmentScope: [],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            user: user,
+            accessibleDepartments: []
+          };
+          return res.json(ownerRole);
+        }
+      }
+
+      // Not found in either place
       return res.status(404).json({ 
         error: 'User role not found',
         message: 'User does not have a role in this project'
