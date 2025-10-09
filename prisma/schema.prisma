@@ -34,10 +34,12 @@ enum TaskStatus {
 }
 
 enum PaymentStatus {
-  PENDING
-  TIMELY
-  PER_COMPLETION
-  RELEASED
+  PENDING      // Task created, no payment allocated yet
+  ALLOCATED    // Payment amount reserved in escrow
+  PROCESSING   // Payment transaction submitted to blockchain
+  PAID         // Payment confirmed on blockchain
+  FAILED       // Payment transaction failed
+  REFUNDED     // Payment returned to escrow
 }
 
 enum Priority {
@@ -112,23 +114,32 @@ model UserRole {
 }
 
 model Project {
-  id          String          @id @default(cuid())
-  name        String          @unique
-  description String?
-  type        ProjectType
-  priority    Priority        @default(MEDIUM)
-  budgetRange String?
-  startDate   DateTime
-  endDate     DateTime
-  color       String?
-  owner       User            @relation("OwnedProjects", fields: [ownerId], references: [id])
-  ownerId     String
-  userRoles   UserRole[]
-  departments Department[]
-  tags        ProjectTag[]
-  invites     ProjectInvite[]
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
+  id              String                   @id @default(cuid())
+  name            String                   @unique
+  description     String?
+  type            ProjectType
+  priority        Priority                 @default(MEDIUM)
+  budgetRange     String?
+  // Escrow Payment Fields
+  budgetAmount    Float?                   // Exact SIZCOIN amount for the project
+  escrowAddress   String?                  // Algorand blockchain escrow account address
+  escrowFunded    Boolean                  @default(false) // Whether escrow has been funded
+  allocatedFunds  Float                    @default(0) // Total SIZCOIN allocated to tasks
+  releasedFunds   Float                    @default(0) // Total SIZCOIN paid to employees
+  startDate       DateTime
+  endDate         DateTime
+  color           String?
+  owner           User                     @relation("OwnedProjects", fields: [ownerId], references: [id])
+  ownerId         String
+  userRoles       UserRole[]
+  departments     Department[]
+  tags            ProjectTag[]
+  invites         ProjectInvite[]
+  // Escrow Relations
+  escrow          ProjectEscrow?
+  transactions    BlockchainTransaction[]
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
 }
 
 model ProjectTag {
@@ -180,40 +191,46 @@ model Department {
 }
 
 model Task {
-  id             String     @id @default(cuid())
-  title          String
-  description    String?
-  status         TaskStatus @default(PENDING)
-  priority       Priority   @default(MEDIUM)
-  department    Department @relation(fields: [departmentId], references: [id])
-  departmentId  String
+  id                  String                 @id @default(cuid())
+  title               String
+  description         String?
+  status              TaskStatus             @default(PENDING)
+  priority            Priority               @default(MEDIUM)
+  department          Department             @relation(fields: [departmentId], references: [id])
+  departmentId        String
   // New: Link to UserRole instead of directly to User
-  assignedRole  UserRole?  @relation("RoleTaskAssignments", fields: [assignedRoleId], references: [id])
-  assignedRoleId String?
+  assignedRole        UserRole?              @relation("RoleTaskAssignments", fields: [assignedRoleId], references: [id])
+  assignedRoleId      String?
   // Keep the old relation for backward compatibility, but mark as deprecated
-  assignedTo    User?      @relation("EmployeeTasks", fields: [employeeId], references: [id])
-  employeeId    String?
+  assignedTo          User?                  @relation("EmployeeTasks", fields: [employeeId], references: [id])
+  employeeId          String?
   // Timing fields for calendar/scheduling
-  startDate     DateTime?
-  dueDate       DateTime?
-  endDate       DateTime?
-  isAllDay      Boolean    @default(false)
-  timeZone      String?
+  startDate           DateTime?
+  dueDate             DateTime?
+  endDate             DateTime?
+  isAllDay            Boolean                @default(false)
+  timeZone            String?
   // UX/Progress fields
-  progress            Int       @default(0)
-  checklistCount      Int       @default(0)
-  checklistCompleted  Int       @default(0)
+  progress            Int                    @default(0)
+  checklistCount      Int                    @default(0)
+  checklistCompleted  Int                    @default(0)
   // Kanban-specific fields
-  order               Int       @default(0)
+  order               Int                    @default(0)
   estimatedHours      Float?
+  // Payment Fields
+  paymentAmount       Float?                 // SIZCOIN amount employee earns for this task
+  paymentStatus       PaymentStatus          @default(PENDING)
+  paidAt              DateTime?              // When payment was released
+  paymentTxHash       String?                // Algorand transaction hash
   // Audit/visibility
-  deletedAt     DateTime?
-  createdByRole UserRole?  @relation("TasksCreatedByRole", fields: [createdByRoleId], references: [id])
-  createdByRoleId String?
-  payments      Payment[]
-  activities    TaskActivity[]
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  deletedAt           DateTime?
+  createdByRole       UserRole?              @relation("TasksCreatedByRole", fields: [createdByRoleId], references: [id])
+  createdByRoleId     String?
+  payments            Payment[]
+  activities          TaskActivity[]
+  blockchainPayment   BlockchainTransaction?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
 
   @@index([departmentId])
   @@index([assignedRoleId])
@@ -222,6 +239,7 @@ model Task {
   @@index([status])
   @@index([priority])
   @@index([status, order])
+  @@index([paymentStatus])
 }
 
 model TaskActivity {
@@ -255,6 +273,62 @@ model Payment {
 }
 
 // Project templates removed
+
+// New Models for Escrow Payment System
+
+model ProjectEscrow {
+  id                  String   @id @default(cuid())
+  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId           String   @unique // One escrow per project
+  escrowAddress       String   @unique // Algorand public address
+  encryptedPrivateKey String   // Encrypted private key (use KMS or crypto library)
+  initialDeposit      Float    @default(0) // First deposit amount
+  currentBalance      Float    @default(0) // Current balance in escrow
+  status              String   @default("ACTIVE") // Values: ACTIVE, CLOSED, FROZEN
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model BlockchainTransaction {
+  id            String    @id @default(cuid())
+  txHash        String    @unique // Algorand transaction ID
+  type          String    // Values: DEPOSIT, TASK_PAYMENT, REFUND, WITHDRAWAL
+  amount        Float     // Amount in SIZCOIN
+  fee           Float?    // Blockchain transaction fee
+  fromAddress   String    // Sender wallet address
+  toAddress     String    // Receiver wallet address
+  project       Project   @relation(fields: [projectId], references: [id])
+  projectId     String
+  task          Task?     @relation(fields: [taskId], references: [id])
+  taskId        String?   @unique // One payment per task
+  status        String    @default("PENDING") // Values: PENDING, CONFIRMED, FAILED
+  blockNumber   BigInt?   // Blockchain block number
+  confirmations Int       @default(0) // Number of confirmations
+  note          String?   // Transaction memo
+  errorMessage  String?   // If transaction failed
+  submittedAt   DateTime
+  confirmedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId])
+  @@index([taskId])
+  @@index([status])
+  @@index([type])
+  @@index([fromAddress])
+  @@index([toAddress])
+}
+
+model UserWallet {
+  id            String    @id @default(cuid())
+  userId        String    @unique // One wallet per user
+  walletAddress String    @unique // Algorand address
+  verified      Boolean   @default(false) // Wallet ownership verified
+  verifiedAt    DateTime?
+  signature     String?   // Verification signature
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
 
 model Config {
   id    String @id @default(cuid())

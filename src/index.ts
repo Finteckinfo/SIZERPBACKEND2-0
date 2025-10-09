@@ -28,6 +28,9 @@ import tasksRouter from "./routes/tasks.js";
 import roleAwareRouter from "./routes/role-aware.js";
 import analyticsRouter from "./routes/analytics.js";
 import chatRouter from "./routes/chat.js";
+import escrowRouter from "./routes/escrow.js";
+import walletsRouter from "./routes/wallets.js";
+import transactionsRouter from "./routes/transactions.js";
 import { initializeWebSocket } from "./services/websocket.js";
 import { createServer } from 'http';
 import { connectRedis, disconnectRedis } from "./services/redis.js";
@@ -109,6 +112,11 @@ app.use("/api/role-aware", roleAwareRouter);
 // Analytics routes
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/chat", chatRouter);
+
+// Escrow and Payment routes
+app.use("/api", escrowRouter);
+app.use("/api", walletsRouter);
+app.use("/api", transactionsRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);

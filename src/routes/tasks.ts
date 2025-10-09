@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
 import { checkProjectAccess } from '../utils/accessControl.js';
 import { broadcastTaskMoved, broadcastTaskAssigned, broadcastTaskCreated, broadcastTaskUpdated } from '../services/websocket.js';
+import { queuePayment } from '../services/paymentQueue.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -19,7 +20,7 @@ const requireAuth = (req: Request, res: Response): boolean => {
 // POST /api/tasks - Create task
 router.post('/', authenticateToken, async (req: Request, res: Response) => {
   try {
-    const { title, description, departmentId, assignedRoleId, priority, startDate, dueDate, endDate, isAllDay, timeZone, progress, checklistCount, checklistCompleted } = req.body;
+    const { title, description, departmentId, assignedRoleId, priority, startDate, dueDate, endDate, isAllDay, timeZone, progress, checklistCount, checklistCompleted, paymentAmount } = req.body;
 
     // Check if user has access to this department
     if (!requireAuth(req, res)) return;
@@ -66,6 +67,32 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Employees cannot create tasks' });
     }
 
+    // Validate payment amount if provided
+    if (paymentAmount !== undefined && paymentAmount !== null) {
+      const parsedAmount = parseFloat(paymentAmount);
+      
+      if (isNaN(parsedAmount) || parsedAmount < 0) {
+        return res.status(400).json({ error: 'Invalid payment amount' });
+      }
+
+      // Check budget availability
+      const project = await prisma.project.findUnique({
+        where: { id: department.projectId },
+      });
+
+      if (project && project.budgetAmount) {
+        const newAllocatedTotal = (project.allocatedFunds || 0) + parsedAmount;
+        
+        if (newAllocatedTotal > project.budgetAmount) {
+          return res.status(400).json({ 
+            error: 'Insufficient budget',
+            available: project.budgetAmount - (project.allocatedFunds || 0),
+            requested: parsedAmount,
+          });
+        }
+      }
+    }
+
     const task = await prisma.task.create({
       data: {
         title,
@@ -81,6 +108,8 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
         progress: typeof progress === 'number' ? progress : undefined,
         checklistCount: typeof checklistCount === 'number' ? checklistCount : undefined,
         checklistCompleted: typeof checklistCompleted === 'number' ? checklistCompleted : undefined,
+        paymentAmount: paymentAmount ? parseFloat(paymentAmount) : undefined,
+        paymentStatus: paymentAmount ? 'ALLOCATED' : 'PENDING',
         createdByRoleId: userRole.id
       },
       include: {
@@ -100,6 +129,18 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
       }
     });
 
+    // Update project allocated funds if payment amount provided
+    if (paymentAmount) {
+      await prisma.project.update({
+        where: { id: department.projectId },
+        data: {
+          allocatedFunds: {
+            increment: parseFloat(paymentAmount),
+          },
+        },
+      });
+    }
+
     // Broadcast task creation
     broadcastTaskCreated(task.department.projectId, task, req.user!.id);
 
@@ -114,7 +155,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
 router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { title, description, status, priority, startDate, dueDate, endDate, isAllDay, timeZone, progress, checklistCount, checklistCompleted } = req.body;
+    const { title, description, status, priority, startDate, dueDate, endDate, isAllDay, timeZone, progress, checklistCount, checklistCompleted, paymentAmount } = req.body;
 
     const task = await prisma.task.findUnique({
       where: { id },
@@ -172,6 +213,43 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Insufficient permissions to update this task' });
     }
 
+    // Validate payment amount update
+    let paymentDelta = 0;
+    if (paymentAmount !== undefined && paymentAmount !== null) {
+      const newAmount = parseFloat(paymentAmount);
+      
+      if (isNaN(newAmount) || newAmount < 0) {
+        return res.status(400).json({ error: 'Invalid payment amount' });
+      }
+
+      // Can't update payment if already paid
+      if (task.paymentStatus === 'PAID') {
+        return res.status(400).json({ error: 'Cannot update payment amount after payment has been released' });
+      }
+
+      const oldAmount = task.paymentAmount || 0;
+      paymentDelta = newAmount - oldAmount;
+
+      // Check budget availability for increased amount
+      if (paymentDelta > 0) {
+        const project = await prisma.project.findUnique({
+          where: { id: task.department.projectId },
+        });
+
+        if (project && project.budgetAmount) {
+          const newAllocatedTotal = (project.allocatedFunds || 0) + paymentDelta;
+          
+          if (newAllocatedTotal > project.budgetAmount) {
+            return res.status(400).json({ 
+              error: 'Insufficient budget for payment increase',
+              available: project.budgetAmount - (project.allocatedFunds || 0),
+              requested: paymentDelta,
+            });
+          }
+        }
+      }
+    }
+
     const updatedTask = await prisma.task.update({
       where: { id },
       data: {
@@ -186,7 +264,9 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
         timeZone: timeZone !== undefined ? (timeZone || null) : undefined,
         progress: typeof progress === 'number' ? progress : undefined,
         checklistCount: typeof checklistCount === 'number' ? checklistCount : undefined,
-        checklistCompleted: typeof checklistCompleted === 'number' ? checklistCompleted : undefined
+        checklistCompleted: typeof checklistCompleted === 'number' ? checklistCompleted : undefined,
+        paymentAmount: paymentAmount !== undefined ? parseFloat(paymentAmount) : undefined,
+        paymentStatus: paymentAmount !== undefined ? (parseFloat(paymentAmount) > 0 ? 'ALLOCATED' : 'PENDING') : undefined
       },
       include: {
         department: true,
@@ -204,6 +284,18 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
         }
       }
     });
+
+    // Update project allocated funds if payment amount changed
+    if (paymentDelta !== 0) {
+      await prisma.project.update({
+        where: { id: task.department.projectId },
+        data: {
+          allocatedFunds: {
+            increment: paymentDelta,
+          },
+        },
+      });
+    }
 
     // Broadcast task update
     broadcastTaskUpdated(task.department.projectId, id, req.body, req.user!.id);
@@ -1424,6 +1516,250 @@ router.patch('/bulk-update-cross-project', authenticateToken, async (req: Reques
   } catch (error) {
     console.error('Error in cross-project bulk update:', error);
     res.status(500).json({ error: 'Failed to perform bulk update' });
+  }
+});
+
+// POST /api/tasks/:id/approve - Approve task and trigger payment
+router.post('/:id/approve', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Get task with all related data
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: {
+        department: {
+          include: {
+            project: {
+              include: {
+                escrow: true,
+              },
+            },
+          },
+        },
+        assignedTo: {
+          select: {
+            id: true,
+            walletAddress: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Verify user is project owner or manager
+    const project = task.department.project;
+    const isOwner = project.ownerId === userId;
+    const isManager = await prisma.userRole.count({
+      where: {
+        userId,
+        projectId: project.id,
+        role: 'PROJECT_MANAGER',
+        status: 'ACTIVE',
+      },
+    });
+
+    if (!isOwner && !isManager) {
+      return res.status(403).json({ error: 'Only project owners and managers can approve tasks' });
+    }
+
+    // Verify task is completed
+    if (task.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'Task must be COMPLETED before approval' });
+    }
+
+    // Check if task has payment amount
+    if (!task.paymentAmount || task.paymentAmount <= 0) {
+      // Approve without payment
+      await prisma.task.update({
+        where: { id },
+        data: { status: 'APPROVED' },
+      });
+      return res.json({
+        success: true,
+        message: 'Task approved (no payment required)',
+        taskId: id,
+      });
+    }
+
+    // Verify payment hasn't already been processed
+    if (task.paymentStatus === 'PAID' || task.paymentStatus === 'PROCESSING') {
+      return res.status(400).json({ error: `Payment already ${task.paymentStatus.toLowerCase()}` });
+    }
+
+    // Verify employee has wallet address
+    if (!task.assignedTo || !task.assignedTo.walletAddress) {
+      return res.status(400).json({ 
+        error: 'Employee does not have a verified wallet address',
+        hint: 'Employee must add and verify their Algorand wallet before receiving payments',
+      });
+    }
+
+    // Verify escrow exists and is funded
+    if (!project.escrow) {
+      return res.status(400).json({ error: 'Escrow account not created for this project' });
+    }
+
+    if (!project.escrowFunded) {
+      return res.status(400).json({ error: 'Project escrow is not funded' });
+    }
+
+    // Check escrow has sufficient balance
+    if (project.escrow.currentBalance < task.paymentAmount) {
+      return res.status(400).json({ 
+        error: 'Insufficient escrow balance',
+        available: project.escrow.currentBalance,
+        required: task.paymentAmount,
+      });
+    }
+
+    // Update task status to APPROVED
+    await prisma.task.update({
+      where: { id },
+      data: {
+        status: 'APPROVED',
+      },
+    });
+
+    // Queue payment for processing
+    const jobId = await queuePayment({
+      taskId: id,
+      projectId: project.id,
+      employeeWalletAddress: task.assignedTo.walletAddress,
+      amount: task.paymentAmount,
+      escrowAddress: project.escrow.escrowAddress,
+      encryptedPrivateKey: project.escrow.encryptedPrivateKey,
+    });
+
+    res.json({
+      success: true,
+      message: 'Task approved and payment queued for processing',
+      taskId: id,
+      amount: task.paymentAmount,
+      employeeEmail: task.assignedTo.email,
+      paymentJobId: jobId,
+    });
+  } catch (error: any) {
+    console.error('Error approving task:', error);
+    res.status(500).json({ error: error.message || 'Failed to approve task' });
+  }
+});
+
+// GET /api/tasks/:id/payment-status - Get payment status for a task
+router.get('/:id/payment-status', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Get task with payment details
+    const task = await prisma.task.findUnique({
+      where: { id },
+      include: {
+        department: {
+          include: {
+            project: {
+              select: {
+                id: true,
+                name: true,
+                ownerId: true,
+              },
+            },
+          },
+        },
+        assignedTo: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            walletAddress: true,
+          },
+        },
+        blockchainPayment: {
+          select: {
+            id: true,
+            txHash: true,
+            amount: true,
+            fee: true,
+            status: true,
+            blockNumber: true,
+            confirmations: true,
+            errorMessage: true,
+            submittedAt: true,
+            confirmedAt: true,
+          },
+        },
+      },
+    });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Verify user has access to this task
+    const project = task.department.project;
+    const isOwner = project.ownerId === userId;
+    const isEmployee = task.assignedTo?.id === userId;
+    const isManager = await prisma.userRole.count({
+      where: {
+        userId,
+        projectId: project.id,
+        role: 'PROJECT_MANAGER',
+        status: 'ACTIVE',
+      },
+    });
+
+    if (!isOwner && !isEmployee && !isManager) {
+      return res.status(403).json({ error: 'Access denied to this task' });
+    }
+
+    res.json({
+      taskId: id,
+      taskTitle: task.title,
+      taskStatus: task.status,
+      payment: {
+        amount: task.paymentAmount,
+        status: task.paymentStatus,
+        paidAt: task.paidAt,
+        txHash: task.paymentTxHash,
+      },
+      employee: task.assignedTo ? {
+        id: task.assignedTo.id,
+        name: `${task.assignedTo.firstName || ''} ${task.assignedTo.lastName || ''}`.trim() || task.assignedTo.email,
+        walletAddress: task.assignedTo.walletAddress,
+      } : null,
+      blockchainTransaction: task.blockchainPayment ? {
+        txHash: task.blockchainPayment.txHash,
+        amount: task.blockchainPayment.amount,
+        fee: task.blockchainPayment.fee,
+        status: task.blockchainPayment.status,
+        blockNumber: task.blockchainPayment.blockNumber?.toString(),
+        confirmations: task.blockchainPayment.confirmations,
+        errorMessage: task.blockchainPayment.errorMessage,
+        submittedAt: task.blockchainPayment.submittedAt,
+        confirmedAt: task.blockchainPayment.confirmedAt,
+      } : null,
+      project: {
+        id: project.id,
+        name: project.name,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching payment status:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch payment status' });
   }
 });
 
