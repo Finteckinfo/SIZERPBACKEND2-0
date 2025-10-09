@@ -55,7 +55,10 @@ router.get('/project/:projectId/user/:userId', authenticateToken, async (req: Re
     });
 
     if (!userRole) {
-      return res.status(404).json({ error: 'User role not found' });
+      return res.status(404).json({ 
+        error: 'User role not found',
+        message: 'User does not have a role in this project'
+      });
     }
 
     res.json(userRole);
