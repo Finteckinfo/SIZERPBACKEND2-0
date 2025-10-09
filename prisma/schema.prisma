@@ -321,9 +321,9 @@ model BlockchainTransaction {
 
 model UserWallet {
   id            String    @id @default(cuid())
-  userId        String    @unique // One wallet per user
-  walletAddress String    @unique // Algorand address
-  verified      Boolean   @default(false) // Wallet ownership verified
+  userId        String    @unique 
+  walletAddress String    @unique 
+  verified      Boolean   @default(false)
   verifiedAt    DateTime?
   signature     String?   // Verification signature
   createdAt     DateTime  @default(now())
