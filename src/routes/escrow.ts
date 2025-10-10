@@ -5,7 +5,11 @@ import {
   getEscrowBalance,
   verifyDepositTransaction,
   getAddressTransactions,
+  optInToSIZCOIN,
+  isOptedInToSIZCOIN,
 } from '../services/algorand.js';
+
+const SIZCOIN_ASSET_ID = 2905622564;
 
 const router = Router();
 
@@ -60,7 +64,15 @@ router.post('/projects/:projectId/escrow/create', async (req: Request, res: Resp
     res.json({
       success: true,
       escrowAddress: result.escrowAddress,
-      message: 'Escrow account created successfully. Fund this address to activate the escrow.',
+      assetId: result.assetId,
+      message: 'Escrow account created successfully.',
+      instructions: {
+        step1: 'Fund this escrow address with ALGO (minimum 0.1 ALGO for transaction fees)',
+        step2: `Call POST /api/projects/${projectId}/escrow/opt-in to opt-in to SIZCOIN`,
+        step3: 'Fund the escrow with SIZCOIN tokens',
+        step4: 'Record the deposit using POST /api/projects/:projectId/escrow/deposit',
+      },
+      note: result.note,
     });
   } catch (error: any) {
     console.error('Error creating escrow:', error);
@@ -69,8 +81,67 @@ router.post('/projects/:projectId/escrow/create', async (req: Request, res: Resp
 });
 
 /**
+ * POST /api/projects/:projectId/escrow/opt-in
+ * Opts the escrow account into SIZCOIN asset
+ */
+router.post('/projects/:projectId/escrow/opt-in', async (req: Request, res: Response) => {
+  try {
+    const { projectId } = req.params;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Verify user is project owner
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      include: {
+        escrow: true,
+      },
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    if (project.ownerId !== userId) {
+      return res.status(403).json({ error: 'Only project owner can opt-in escrow to SIZCOIN' });
+    }
+
+    if (!project.escrow) {
+      return res.status(400).json({ error: 'Escrow account not created for this project' });
+    }
+
+    // Check if already opted-in
+    const alreadyOptedIn = await isOptedInToSIZCOIN(project.escrow.escrowAddress);
+    if (alreadyOptedIn) {
+      return res.status(400).json({ 
+        error: 'Escrow is already opted-in to SIZCOIN',
+        assetId: SIZCOIN_ASSET_ID,
+      });
+    }
+
+    // Perform opt-in
+    const result = await optInToSIZCOIN(
+      project.escrow.escrowAddress,
+      project.escrow.encryptedPrivateKey
+    );
+
+    res.json({
+      success: true,
+      ...result,
+      message: 'Escrow successfully opted-in to SIZCOIN. You can now fund it with SIZCOIN tokens.',
+    });
+  } catch (error: any) {
+    console.error('Error opting in to SIZCOIN:', error);
+    res.status(500).json({ error: error.message || 'Failed to opt-in to SIZCOIN' });
+  }
+});
+
+/**
  * POST /api/projects/:projectId/escrow/deposit
- * Records owner's deposit transaction
+ * Records owner's SIZCOIN deposit transaction
  */
 router.post('/projects/:projectId/escrow/deposit', async (req: Request, res: Response) => {
   try {

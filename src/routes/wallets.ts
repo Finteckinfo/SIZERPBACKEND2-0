@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/database.js';
-import { isValidAlgorandAddress } from '../services/algorand.js';
+import { isValidAlgorandAddress, isOptedInToSIZCOIN } from '../services/algorand.js';
 import algosdk from 'algosdk';
 
+const SIZCOIN_ASSET_ID = 2905622564;
 const router = Router();
 
 /**
@@ -27,6 +28,16 @@ router.post('/users/wallet/verify', async (req: Request, res: Response) => {
     // Validate Algorand address format
     if (!isValidAlgorandAddress(walletAddress)) {
       return res.status(400).json({ error: 'Invalid Algorand address format' });
+    }
+
+    // Check if wallet has opted-in to SIZCOIN
+    const optedInToSIZCOIN = await isOptedInToSIZCOIN(walletAddress);
+    if (!optedInToSIZCOIN) {
+      return res.status(400).json({ 
+        error: 'Wallet has not opted-in to SIZCOIN',
+        message: `This wallet must opt-in to SIZCOIN (Asset ID: ${SIZCOIN_ASSET_ID}) before it can receive payments. Please opt-in using your Algorand wallet.`,
+        assetId: SIZCOIN_ASSET_ID,
+      });
     }
 
     // Verify the signature
@@ -92,7 +103,9 @@ router.post('/users/wallet/verify', async (req: Request, res: Response) => {
       verified: true,
       walletAddress: wallet.walletAddress,
       verifiedAt: wallet.verifiedAt,
-      message: 'Wallet verified successfully',
+      optedInToSIZCOIN: true,
+      assetId: SIZCOIN_ASSET_ID,
+      message: 'Wallet verified successfully and opted-in to SIZCOIN',
     });
   } catch (error: any) {
     console.error('Error verifying wallet:', error);
