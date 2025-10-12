@@ -1,0 +1,677 @@
+═══════════════════════════════════════════════════════════════════════════════
+  FINAL BACKEND PAYMENT SYSTEM REQUIREMENTS
+  COMPLETE ESCROW & PAYMENT IMPLEMENTATION
+═══════════════════════════════════════════════════════════════════════════════
+
+CRITICAL: This is the FINAL payment-related backend change request.
+After this implementation, the payment system will be 100% complete.
+
+═══════════════════════════════════════════════════════════════════════════════
+📊 DATABASE SCHEMA - NEW MODELS TO ADD
+═══════════════════════════════════════════════════════════════════════════════
+
+1. UserRolePayment (Payment configuration per team member)
+────────────────────────────────────────────────────────────────────────────
+model UserRolePayment {
+  id              String   @id @default(cuid())
+  userRole        UserRole @relation(fields: [userRoleId], references: [id], onDelete: Cascade)
+  userRoleId      String   @unique
+  
+  paymentType     String   // PER_TASK, SALARY, OVERSIGHT, MILESTONE, HYBRID
+  salaryAmount    Float?
+  salaryFrequency String?  // WEEKLY, BIWEEKLY, MONTHLY
+  milestoneAmount Float?
+  milestoneId     String?
+  oversightRate   Float?   // 0.05 = 5%
+  
+  active          Boolean  @default(true)
+  startDate       DateTime @default(now())
+  endDate         DateTime?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([userRoleId])
+  @@index([paymentType])
+}
+
+2. RecurringPayment (Salary tracking and auto-release)
+────────────────────────────────────────────────────────────────────────────
+model RecurringPayment {
+  id              String   @id @default(cuid())
+  userRole        UserRole @relation(fields: [userRoleId], references: [id], onDelete: Cascade)
+  userRoleId      String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  
+  amount          Float
+  frequency       String   // WEEKLY, BIWEEKLY, MONTHLY
+  
+  startDate       DateTime
+  endDate         DateTime?
+  nextPaymentDate DateTime
+  lastPaidDate    DateTime?
+  
+  status          String   @default("ACTIVE") // ACTIVE, PAUSED, COMPLETED, CANCELLED
+  totalPaid       Float    @default(0)
+  paymentCount    Int      @default(0)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([projectId])
+  @@index([userRoleId])
+  @@index([nextPaymentDate])
+  @@index([status])
+}
+
+3. EXTEND EXISTING MODELS
+────────────────────────────────────────────────────────────────────────────
+Add to Project model:
+  minimumBalance     Float?
+  fundingStrategy    String?  // FULL_UPFRONT, MILESTONE_BASED, ROLLING
+  recurringPayments  RecurringPayment[]
+
+Add to UserRole model:
+  paymentConfig      UserRolePayment?
+  recurringPayments  RecurringPayment[]
+
+Add to ProjectInvite model:
+  paymentType        String?
+  salaryAmount       Float?
+  salaryFrequency    String?
+  oversightRate      Float?
+
+═══════════════════════════════════════════════════════════════════════════════
+🔌 NEW API ENDPOINTS TO IMPLEMENT
+═══════════════════════════════════════════════════════════════════════════════
+
+A. USER ROLE PAYMENT CONFIGURATION
+────────────────────────────────────────────────────────────────────────────
+
+1. POST /api/user-roles/:userRoleId/payment-config
+   Create or update payment configuration for a team member
+
+   Body:
+   {
+     paymentType: "PER_TASK" | "SALARY" | "OVERSIGHT" | "MILESTONE" | "HYBRID",
+     salaryAmount?: number,
+     salaryFrequency?: "WEEKLY" | "BIWEEKLY" | "MONTHLY",
+     oversightRate?: number,
+     milestoneAmount?: number,
+     startDate?: string,
+     endDate?: string
+   }
+
+   Logic:
+   - Create or update UserRolePayment record
+   - If SALARY: Create RecurringPayment record
+   - Calculate and allocate funds from escrow
+   - Return configuration with next payment date
+
+   Response:
+   {
+     id: string;
+     paymentType: string;
+     salaryAmount: number;
+     nextPaymentDate: string;
+     estimatedMonthly: number;
+   }
+
+2. GET /api/user-roles/:userRoleId/payment-config
+   Get payment configuration for a role
+
+   Response:
+   {
+     id: string;
+     paymentType: string;
+     salaryAmount?: number;
+     salaryFrequency?: string;
+     oversightRate?: number;
+     nextPayment?: { date: string, amount: number };
+     totalEarned: number;
+   }
+
+────────────────────────────────────────────────────────────────────────────
+
+B. RECURRING PAYMENTS (SALARIES)
+────────────────────────────────────────────────────────────────────────────
+
+1. POST /api/projects/:projectId/recurring-payments
+   Create recurring salary payment
+
+   Body:
+   {
+     userRoleId: string;
+     amount: number;
+     frequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY";
+     startDate: string;
+     endDate?: string;
+   }
+
+   Logic:
+   - Calculate total allocation (amount × periods)
+   - Allocate funds from escrow
+   - Create RecurringPayment record
+   - Schedule first payment
+   - Return payment schedule
+
+   Response:
+   {
+     id: string;
+     amount: number;
+     frequency: string;
+     nextPaymentDate: string;
+     estimatedTotal: number;
+     fundsAllocated: number;
+   }
+
+2. GET /api/projects/:projectId/recurring-payments
+   List all recurring payments for project
+
+   Query params:
+   ?status=ACTIVE&userId=xxx
+
+   Response:
+   {
+     payments: [
+       {
+         id: string;
+         userRole: { user: { firstName, lastName }, role: string };
+         amount: number;
+         frequency: string;
+         nextPaymentDate: string;
+         status: string;
+       }
+     ];
+     totalMonthly: number;
+     upcomingPayments: [
+       { date: string, amount: number, recipient: string }
+     ];
+   }
+
+3. PATCH /api/recurring-payments/:id/pause
+   Pause recurring payment
+
+4. PATCH /api/recurring-payments/:id/resume
+   Resume recurring payment
+
+5. DELETE /api/recurring-payments/:id/cancel
+   Cancel recurring payment (refund allocated funds)
+
+6. POST /api/recurring-payments/process-due
+   Background job to process due salary payments
+
+   Logic (Run Daily at 00:00 UTC):
+   1. Find RecurringPayment where nextPaymentDate <= NOW and status = ACTIVE
+   2. For each payment:
+      a. Check escrow balance sufficient
+      b. Check employee wallet opted into SIZCOIN
+      c. Create ASA transfer (Asset ID: 2905622564)
+      d. Submit to Algorand
+      e. Record in BlockchainTransaction
+      f. Update nextPaymentDate
+      g. Increment counters
+   3. If balance insufficient:
+      a. Set status = PAUSED
+      b. Send alert to owner
+   4. Return processed count
+
+────────────────────────────────────────────────────────────────────────────
+
+C. ENHANCED ESCROW FUNDING
+────────────────────────────────────────────────────────────────────────────
+
+1. POST /api/projects/:projectId/escrow/fund
+   Integrated wallet funding or manual deposit
+
+   Body:
+   {
+     amount: number;
+     txHash?: string;
+   }
+
+   Logic:
+   - If txHash provided: Verify on blockchain
+   - Confirm Asset ID = 2905622564
+   - Update escrow balance
+   - Update project.escrowFunded
+   - Return updated balance
+
+   Response:
+   {
+     success: boolean;
+     verified: boolean;
+     currentBalance: number;
+     txHash: string;
+   }
+
+2. GET /api/projects/:projectId/escrow/funding-needed
+   Calculate how much funding is needed
+
+   Response:
+   {
+     currentBalance: number;
+     allocated: number;
+     available: number;
+     upcoming: {
+       next7Days: number;
+       next30Days: number;
+       next90Days: number;
+     };
+     breakdown: {
+       tasks: number;
+       salaries: number;
+     };
+     recommended: number;
+     critical: boolean;
+   }
+
+   Logic:
+   - Sum pending task payments
+   - Sum upcoming salary payments (next 30 days)
+   - Check if balance < minimum
+   - Calculate recommended top-up
+
+────────────────────────────────────────────────────────────────────────────
+
+D. ENHANCED PROJECT CREATION
+────────────────────────────────────────────────────────────────────────────
+
+Enhance: POST /api/projects
+
+Add to request body:
+{
+  budgetAmount: number;
+  minimumBalance?: number;
+  fundingStrategy?: "FULL_UPFRONT" | "ROLLING";
+  
+  roles: [
+    {
+      userEmail: string;
+      role: string;
+      departmentId?: string;
+      // NEW payment configuration:
+      paymentType?: "PER_TASK" | "SALARY" | "OVERSIGHT" | "HYBRID";
+      salaryAmount?: number;
+      salaryFrequency?: "WEEKLY" | "BIWEEKLY" | "MONTHLY";
+      oversightRate?: number;
+    }
+  ];
+}
+
+Enhanced logic:
+1. Create project
+2. Create escrow
+3. Opt-in to SIZCOIN
+4. Create user roles
+5. For each role with payment config:
+   a. Create UserRolePayment
+   b. If SALARY: Create RecurringPayment
+   c. Allocate funds
+6. Send invites with payment terms
+7. Return project with payment info
+
+────────────────────────────────────────────────────────────────────────────
+
+E. ENHANCED TASK APPROVAL (MANAGER OVERSIGHT)
+────────────────────────────────────────────────────────────────────────────
+
+Enhance: POST /api/tasks/:taskId/approve
+
+Enhanced logic:
+1. Approve task
+2. Pay employee: task.paymentAmount
+3. NEW: Check department manager(s)
+4. NEW: For each manager with oversightRate:
+   a. Calculate: fee = task.paymentAmount × oversightRate
+   b. Create ASA transfer to manager
+   c. Record as OVERSIGHT_FEE transaction
+5. Update all payment statuses
+6. Return both employee and manager payments
+
+Response:
+{
+  success: true;
+  employeePayment: {
+    txHash: string;
+    amount: number;
+  };
+  oversightPayments?: [
+    {
+      managerId: string;
+      managerName: string;
+      amount: number;
+      txHash: string;
+    }
+  ];
+  message: string;
+}
+
+────────────────────────────────────────────────────────────────────────────
+
+F. ENHANCED INVITE ACCEPTANCE
+────────────────────────────────────────────────────────────────────────────
+
+Enhance: POST /api/invites/:inviteId/accept
+
+Enhanced logic:
+1. Accept invite
+2. Create UserRole
+3. If invite has payment terms:
+   a. Create UserRolePayment
+   b. If SALARY: Create RecurringPayment
+   c. Allocate funds from escrow
+   d. Schedule first payment
+4. Return role with payment info
+
+Response:
+{
+  role: {...};
+  paymentConfig?: {
+    type: string;
+    nextPayment?: { date: string, amount: number };
+  };
+}
+
+═══════════════════════════════════════════════════════════════════════════════
+⚙️ BACKGROUND JOBS REQUIRED
+═══════════════════════════════════════════════════════════════════════════════
+
+1. PROCESS RECURRING PAYMENTS
+   Schedule: Daily at 00:00 UTC
+   Function: processRecurringPayments()
+   
+   Logic:
+   - Find all RecurringPayment where nextPaymentDate <= NOW and status = ACTIVE
+   - Check escrow balance
+   - Check wallet opt-in
+   - Create SIZCOIN transfer (Asset ID: 2905622564)
+   - Submit to blockchain
+   - Update payment record
+   - Schedule next payment
+   - Send low balance alert if needed
+
+2. LOW BALANCE ALERTS
+   Schedule: Daily at 08:00 UTC
+   Function: checkLowBalanceAlerts()
+   
+   Logic:
+   - For each project with minimumBalance
+   - Check if balance < minimum
+   - Calculate upcoming payments (30 days)
+   - If balance insufficient:
+     - Send notification to owner
+     - Send email alert
+     - Create dashboard alert
+
+3. TRANSACTION VERIFICATION
+   Schedule: Every 5 minutes
+   Function: verifyPendingTransactions()
+   
+   Logic:
+   - Find BlockchainTransaction where status = PENDING
+   - Query Algorand for confirmation
+   - If confirmed:
+     - Update status = CONFIRMED
+     - Update confirmations count
+     - Update task/payment status if applicable
+
+═══════════════════════════════════════════════════════════════════════════════
+🪙 SIZCOIN INTEGRATION REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
+
+ALL blockchain transactions MUST use SIZCOIN:
+
+Asset Information:
+- Asset ID: 2905622564
+- Unit Name: SIZ
+- Decimals: 2 (1 SIZ = 100 micro units)
+- Network: Algorand MainNet & TestNet
+
+Critical Requirements:
+1. Use ASA transfer transactions (NOT payment transactions)
+2. Always verify Asset ID = 2905622564
+3. Convert SIZ to micro units: amount × 100
+4. Check wallet opted into SIZCOIN before sending
+5. Opt-in escrow accounts automatically
+6. All balances in database stored as SIZ (not micro units)
+
+Transaction Format:
+{
+  type: 'axfer',              // Asset transfer, NOT 'pay'
+  assetIndex: 2905622564,     // SIZCOIN Asset ID
+  sender: escrowAddress,
+  receiver: employeeWallet,
+  amount: sizAmount × 100,    // Convert to micro units
+  note: "Payment description"
+}
+
+═══════════════════════════════════════════════════════════════════════════════
+📋 COMPLETE TESTING CHECKLIST
+═══════════════════════════════════════════════════════════════════════════════
+
+Per-Task Payment (Already Working):
+☐ Create task with payment
+☐ Approve task
+☐ Verify SIZCOIN sent
+☐ Check transaction on explorer
+
+Recurring Salary:
+☐ Create project with salary config
+☐ Fund escrow
+☐ Employee accepts invite with salary
+☐ Salary auto-allocated
+☐ Wait for payment date
+☐ Verify auto-release works
+☐ Check next payment scheduled
+☐ Verify balance deducted
+
+Manager Oversight:
+☐ Create project
+☐ Invite manager with 5% oversight
+☐ Create task in manager's department
+☐ Approve task
+☐ Verify employee paid task amount
+☐ Verify manager paid 5% automatically
+☐ Check both transactions on explorer
+
+Low Balance Alert:
+☐ Set minimum balance
+☐ Fund below minimum
+☐ Verify owner receives alert
+☐ Owner adds funds
+☐ Verify alert cleared
+
+Escrow Funding:
+☐ Create project with budget
+☐ Go to fund escrow page
+☐ Send SIZCOIN from wallet
+☐ Verify transaction confirms
+☐ Check balance updated
+☐ Verify can now assign tasks
+
+Payment Configuration:
+☐ Create project
+☐ Add manager with oversight config
+☐ Add employee with salary config
+☐ Add employee with per-task config
+☐ Submit project
+☐ Verify payment configs saved
+☐ Check funds allocated correctly
+
+═══════════════════════════════════════════════════════════════════════════════
+🚀 IMPLEMENTATION PRIORITY
+═══════════════════════════════════════════════════════════════════════════════
+
+PHASE 1 - ESSENTIAL (Must Implement Now):
+──────────────────────────────────────────────
+☐ 1. Add UserRolePayment model
+☐ 2. Add RecurringPayment model
+☐ 3. Extend Project, UserRole, ProjectInvite models
+☐ 4. POST /user-roles/:id/payment-config
+☐ 5. GET /user-roles/:id/payment-config
+☐ 6. POST /projects/:id/recurring-payments
+☐ 7. GET /projects/:id/recurring-payments
+☐ 8. PATCH /recurring-payments/:id/pause
+☐ 9. POST /recurring-payments/process-due (Cron)
+☐ 10. Enhance POST /projects (payment config)
+☐ 11. Enhance POST /tasks/:id/approve (oversight)
+☐ 12. Enhance POST /invites/:id/accept (payment setup)
+☐ 13. POST /projects/:id/escrow/fund
+☐ 14. GET /projects/:id/escrow/funding-needed
+☐ 15. Daily cron: Process recurring payments
+☐ 16. Daily cron: Send low balance alerts
+
+PHASE 2 - ADVANCED (Optional Later):
+──────────────────────────────────────────────
+☐ 1. Add ProjectMilestone model
+☐ 2. Add MilestonePayment model
+☐ 3. Milestone management endpoints
+☐ 4. Milestone auto-completion checks
+☐ 5. Payment forecasting endpoints
+
+═══════════════════════════════════════════════════════════════════════════════
+💡 KEY BUSINESS LOGIC
+═══════════════════════════════════════════════════════════════════════════════
+
+1. FUND ALLOCATION
+   When creating payment config:
+   - Calculate total needed
+   - Reserve from escrow.currentBalance
+   - Update project.allocatedFunds
+   - If balance insufficient: Return error
+
+2. SALARY AUTO-RELEASE
+   Daily cron checks nextPaymentDate:
+   - If due: Create SIZCOIN transaction
+   - Submit to Algorand
+   - Record in BlockchainTransaction
+   - Update nextPaymentDate (add frequency)
+   - If escrow balance low: Pause and alert
+
+3. OVERSIGHT AUTO-PAYMENT
+   When task approved:
+   - Find department managers with oversightRate
+   - Calculate fee = taskAmount × oversightRate
+   - Create separate transaction for each manager
+   - Record as OVERSIGHT_FEE type
+   - Both payments happen atomically
+
+4. LOW BALANCE DETECTION
+   After any payment:
+   - Check if balance < minimumBalance
+   - Calculate upcoming payments (30 days)
+   - If insufficient: Send alert
+   - Suggest top-up amount
+
+═══════════════════════════════════════════════════════════════════════════════
+📊 EXAMPLE DATA FLOWS
+═══════════════════════════════════════════════════════════════════════════════
+
+FLOW 1: Create Project with Mixed Payment
+──────────────────────────────────────────────
+Request:
+{
+  name: "Website Redesign",
+  budgetAmount: 5000,
+  minimumBalance: 1000,
+  roles: [
+    {
+      email: "manager@team.com",
+      role: "PROJECT_MANAGER",
+      departmentId: "dept-1",
+      paymentType: "OVERSIGHT",
+      oversightRate: 0.05  // 5%
+    },
+    {
+      email: "dev@team.com",
+      role: "EMPLOYEE",
+      departmentId: "dept-1",
+      paymentType: "SALARY",
+      salaryAmount: 500,
+      salaryFrequency: "WEEKLY"
+    },
+    {
+      email: "designer@team.com",
+      role: "EMPLOYEE",
+      departmentId: "dept-1",
+      paymentType: "PER_TASK"
+    }
+  ]
+}
+
+Backend creates:
+- Project with escrow
+- UserRole for each member
+- UserRolePayment for manager (OVERSIGHT)
+- UserRolePayment for dev (SALARY)
+- RecurringPayment for dev (500 SIZ weekly)
+- UserRolePayment for designer (PER_TASK)
+- Allocates 2000 SIZ for first month salaries
+
+FLOW 2: Process Weekly Salary
+──────────────────────────────────────────────
+Cron job runs Monday 00:00:
+- Finds dev's RecurringPayment
+- nextPaymentDate: 2025-10-13 (today)
+- amount: 500 SIZ
+- Checks escrow balance: 4500 SIZ (sufficient)
+- Creates SIZCOIN transfer:
+  - Asset: 2905622564
+  - From: escrow address
+  - To: dev wallet
+  - Amount: 50000 micro units (500 × 100)
+- Submits to Algorand
+- Records transaction
+- Updates nextPaymentDate: 2025-10-20
+- Updates escrow balance: 4000 SIZ
+
+FLOW 3: Task Approval with Oversight
+──────────────────────────────────────────────
+Manager approves task:
+- Task payment: 200 SIZ
+- Manager oversight: 5%
+
+Backend creates 2 transactions:
+1. Employee payment:
+   - Asset: 2905622564
+   - Amount: 20000 micro units (200 × 100)
+   - Type: TASK_PAYMENT
+   
+2. Manager oversight:
+   - Asset: 2905622564
+   - Amount: 1000 micro units (10 × 100)
+   - Type: OVERSIGHT_FEE
+   - Note: "5% oversight for task XYZ"
+
+Total escrow deduction: 210 SIZ
+
+═══════════════════════════════════════════════════════════════════════════════
+✅ SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+NEW MODELS: 2 essential (UserRolePayment, RecurringPayment)
+NEW ENDPOINTS: 10 essential
+ENHANCED ENDPOINTS: 3 existing
+BACKGROUND JOBS: 3 required
+SIZCOIN INTEGRATION: Asset ID 2905622564
+
+After implementation, the system will support:
+✅ Per-task payments
+✅ Weekly/monthly salaries
+✅ Manager oversight fees
+✅ Flexible team payment configs
+✅ Escrow funding UI
+✅ Auto-payment processing
+✅ Low balance alerts
+✅ Two people paid differently
+✅ Payment per time or per task
+✅ Owner gradual funding
+
+This is the COMPLETE payment system. No more changes after this.
+
+═══════════════════════════════════════════════════════════════════════════════
+END OF REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
+

@@ -116,7 +116,7 @@ router.get('/project/:projectId', authenticateToken, async (req: Request, res: R
 // POST /api/invites - Create new invite
 router.post('/', authenticateToken, async (req: Request, res: Response) => {
   try {
-    const { email, role, projectId, expiresAt } = req.body;
+    const { email, role, projectId, expiresAt, paymentType, salaryAmount, salaryFrequency, oversightRate } = req.body;
 
     // req.user is guaranteed to exist after authenticateToken middleware
 
@@ -173,7 +173,11 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
         role,
         projectId,
         userId: existingUser?.id, // Will be null if user doesn't exist yet
-        expiresAt: new Date(expiresAt)
+        expiresAt: new Date(expiresAt),
+        paymentType,
+        salaryAmount,
+        salaryFrequency,
+        oversightRate,
       }
     });
 
@@ -223,7 +227,8 @@ router.put('/:id/respond', authenticateToken, async (req: Request, res: Response
           projectId: invite.projectId,
           role: invite.role,
           acceptedAt: new Date(),
-          inviteId: invite.id
+          inviteId: invite.id,
+          status: 'ACTIVE',
         }
       });
 
@@ -236,7 +241,61 @@ router.put('/:id/respond', authenticateToken, async (req: Request, res: Response
         }
       });
 
-      res.json({ message: 'Invite accepted', userRole });
+      // If invite has payment terms, create payment configuration
+      let paymentConfig = null;
+      if (invite.paymentType) {
+        paymentConfig = await prisma.userRolePayment.create({
+          data: {
+            userRoleId: userRole.id,
+            paymentType: invite.paymentType,
+            salaryAmount: invite.salaryAmount,
+            salaryFrequency: invite.salaryFrequency,
+            oversightRate: invite.oversightRate,
+          },
+        });
+
+        // If SALARY type, create recurring payment
+        if (invite.paymentType === 'SALARY' && invite.salaryAmount && invite.salaryFrequency) {
+          const nextDate = calculateNextPaymentDate(new Date(), invite.salaryFrequency);
+          
+          await prisma.recurringPayment.create({
+            data: {
+              userRoleId: userRole.id,
+              projectId: invite.projectId,
+              amount: invite.salaryAmount,
+              frequency: invite.salaryFrequency,
+              startDate: new Date(),
+              nextPaymentDate: nextDate,
+              status: 'ACTIVE',
+            },
+          });
+
+          // Allocate funds for first month
+          const periodsInMonth = invite.salaryFrequency === 'WEEKLY' ? 4 : invite.salaryFrequency === 'BIWEEKLY' ? 2 : 1;
+          const monthlyAllocation = invite.salaryAmount * periodsInMonth;
+
+          await prisma.project.update({
+            where: { id: invite.projectId },
+            data: {
+              allocatedFunds: {
+                increment: monthlyAllocation,
+              },
+            },
+          });
+        }
+      }
+
+      res.json({ 
+        message: 'Invite accepted', 
+        userRole,
+        paymentConfig: paymentConfig ? {
+          type: paymentConfig.paymentType,
+          nextPayment: paymentConfig.paymentType === 'SALARY' && invite.salaryFrequency ? {
+            date: calculateNextPaymentDate(new Date(), invite.salaryFrequency),
+            amount: invite.salaryAmount,
+          } : undefined,
+        } : undefined,
+      });
     } else if (response === 'DECLINE') {
       await prisma.projectInvite.update({
         where: { id },
@@ -339,5 +398,22 @@ router.delete('/:id', authenticateToken, async (req: Request, res: Response) => 
     res.status(500).json({ error: 'Failed to delete invite' });
   }
 });
+
+// Helper function
+function calculateNextPaymentDate(currentDate: Date, frequency: string): Date {
+  const next = new Date(currentDate);
+  switch (frequency) {
+    case 'WEEKLY':
+      next.setDate(next.getDate() + 7);
+      break;
+    case 'BIWEEKLY':
+      next.setDate(next.getDate() + 14);
+      break;
+    case 'MONTHLY':
+      next.setMonth(next.getMonth() + 1);
+      break;
+  }
+  return next;
+}
 
 export default router;

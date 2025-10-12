@@ -87,59 +87,66 @@ model User {
 }
 
 model UserRole {
-  id                    String       @id @default(cuid())
-  user                  User         @relation(fields: [userId], references: [id])
+  id                    String              @id @default(cuid())
+  user                  User                @relation(fields: [userId], references: [id])
   userId                String
-  project               Project      @relation(fields: [projectId], references: [id])
+  project               Project             @relation(fields: [projectId], references: [id])
   projectId             String
   role                  Role
-  status                UserRoleStatus @default(PENDING)
+  status                UserRoleStatus      @default(PENDING)
   acceptedAt            DateTime?
-  invite                ProjectInvite? @relation(fields: [inviteId], references: [id])
+  invite                ProjectInvite?      @relation(fields: [inviteId], references: [id])
   inviteId              String?
   // Scoping to departments; stores ordered list of department IDs user cares about
-  departmentOrder       String[]     @default([])
+  departmentOrder       String[]            @default([])
   // Visibility/scope subset of departments for this role
-  departmentScope       String[]     @default([])
+  departmentScope       String[]            @default([])
   // New: Link to departments this role manages
-  managedDepartments    Department[] @relation("DepartmentManagers")
+  managedDepartments    Department[]        @relation("DepartmentManagers")
   // New: Link to departments this role has access to
-  accessibleDepartments Department[] @relation("DepartmentAccess")
+  accessibleDepartments Department[]        @relation("DepartmentAccess")
   // New: Link to tasks assigned to this role
-  assignedTasks         Task[]       @relation("RoleTaskAssignments")
+  assignedTasks         Task[]              @relation("RoleTaskAssignments")
   // New: Link to tasks created by this role (audit)
-  createdTasks          Task[]       @relation("TasksCreatedByRole")
-  createdAt             DateTime     @default(now())
-  updatedAt             DateTime     @updatedAt
+  createdTasks          Task[]              @relation("TasksCreatedByRole")
+  // Payment Configuration
+  paymentConfig         UserRolePayment?
+  recurringPayments     RecurringPayment[]
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
 }
 
 model Project {
-  id              String                   @id @default(cuid())
-  name            String                   @unique
-  description     String?
-  type            ProjectType
-  priority        Priority                 @default(MEDIUM)
-  budgetRange     String?
+  id                 String                   @id @default(cuid())
+  name               String                   @unique
+  description        String?
+  type               ProjectType
+  priority           Priority                 @default(MEDIUM)
+  budgetRange        String?
   // Escrow Payment Fields
-  budgetAmount    Float?                   // Exact SIZCOIN amount for the project
-  escrowAddress   String?                  // Algorand blockchain escrow account address
-  escrowFunded    Boolean                  @default(false) // Whether escrow has been funded
-  allocatedFunds  Float                    @default(0) // Total SIZCOIN allocated to tasks
-  releasedFunds   Float                    @default(0) // Total SIZCOIN paid to employees
-  startDate       DateTime
-  endDate         DateTime
-  color           String?
-  owner           User                     @relation("OwnedProjects", fields: [ownerId], references: [id])
-  ownerId         String
-  userRoles       UserRole[]
-  departments     Department[]
-  tags            ProjectTag[]
-  invites         ProjectInvite[]
+  budgetAmount       Float?                   // Exact SIZCOIN amount for the project
+  escrowAddress      String?                  // Algorand blockchain escrow account address
+  escrowFunded       Boolean                  @default(false) // Whether escrow has been funded
+  allocatedFunds     Float                    @default(0) // Total SIZCOIN allocated to tasks
+  releasedFunds      Float                    @default(0) // Total SIZCOIN paid to employees
+  // Recurring Payment Fields
+  minimumBalance     Float?                   // Minimum balance threshold for alerts
+  fundingStrategy    String?                  // FULL_UPFRONT, MILESTONE_BASED, ROLLING
+  startDate          DateTime
+  endDate            DateTime
+  color              String?
+  owner              User                     @relation("OwnedProjects", fields: [ownerId], references: [id])
+  ownerId            String
+  userRoles          UserRole[]
+  departments        Department[]
+  tags               ProjectTag[]
+  invites            ProjectInvite[]
   // Escrow Relations
-  escrow          ProjectEscrow?
-  transactions    BlockchainTransaction[]
-  createdAt       DateTime                 @default(now())
-  updatedAt       DateTime                 @updatedAt
+  escrow             ProjectEscrow?
+  transactions       BlockchainTransaction[]
+  recurringPayments  RecurringPayment[]
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
 }
 
 model ProjectTag {
@@ -155,18 +162,23 @@ model ProjectTag {
 // Drafting removed
 
 model ProjectInvite {
-  id        String       @id @default(cuid())
-  email     String
-  role      Role
-  status    InviteStatus @default(PENDING)
-  project   Project      @relation(fields: [projectId], references: [id])
-  projectId String
-  user      User?        @relation(fields: [userId], references: [id])
-  userId    String?
-  expiresAt DateTime
-  userRoles UserRole[]
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  id              String       @id @default(cuid())
+  email           String
+  role            Role
+  status          InviteStatus @default(PENDING)
+  project         Project      @relation(fields: [projectId], references: [id])
+  projectId       String
+  user            User?        @relation(fields: [userId], references: [id])
+  userId          String?
+  expiresAt       DateTime
+  // Payment Terms (optional)
+  paymentType     String?      // PER_TASK, SALARY, OVERSIGHT, MILESTONE, HYBRID
+  salaryAmount    Float?
+  salaryFrequency String?      // WEEKLY, BIWEEKLY, MONTHLY
+  oversightRate   Float?       // 0.05 = 5%
+  userRoles       UserRole[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 }
 
 model Department {
@@ -328,6 +340,59 @@ model UserWallet {
   signature     String?   // Verification signature
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+}
+
+// Payment Configuration Models
+
+model UserRolePayment {
+  id              String    @id @default(cuid())
+  userRole        UserRole  @relation(fields: [userRoleId], references: [id], onDelete: Cascade)
+  userRoleId      String    @unique // One payment config per role
+  
+  paymentType     String    // PER_TASK, SALARY, OVERSIGHT, MILESTONE, HYBRID
+  salaryAmount    Float?
+  salaryFrequency String?   // WEEKLY, BIWEEKLY, MONTHLY
+  milestoneAmount Float?
+  milestoneId     String?
+  oversightRate   Float?    // 0.05 = 5%
+  
+  active          Boolean   @default(true)
+  startDate       DateTime  @default(now())
+  endDate         DateTime?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([userRoleId])
+  @@index([paymentType])
+}
+
+model RecurringPayment {
+  id              String   @id @default(cuid())
+  userRole        UserRole @relation(fields: [userRoleId], references: [id], onDelete: Cascade)
+  userRoleId      String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  
+  amount          Float
+  frequency       String   // WEEKLY, BIWEEKLY, MONTHLY
+  
+  startDate       DateTime
+  endDate         DateTime?
+  nextPaymentDate DateTime
+  lastPaidDate    DateTime?
+  
+  status          String   @default("ACTIVE") // ACTIVE, PAUSED, COMPLETED, CANCELLED
+  totalPaid       Float    @default(0)
+  paymentCount    Int      @default(0)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([projectId])
+  @@index([userRoleId])
+  @@index([nextPaymentDate])
+  @@index([status])
 }
 
 model Config {

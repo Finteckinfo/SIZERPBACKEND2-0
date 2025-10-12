@@ -1630,7 +1630,7 @@ router.post('/:id/approve', authenticateToken, async (req: Request, res: Respons
       },
     });
 
-    // Queue payment for processing
+    // Queue employee payment
     const jobId = await queuePayment({
       taskId: id,
       projectId: project.id,
@@ -1640,13 +1640,71 @@ router.post('/:id/approve', authenticateToken, async (req: Request, res: Respons
       encryptedPrivateKey: project.escrow.encryptedPrivateKey,
     });
 
+    // Check for manager oversight fees
+    const department = await prisma.department.findUnique({
+      where: { id: task.departmentId },
+      include: {
+        managers: {
+          include: {
+            paymentConfig: true,
+            user: {
+              select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                walletAddress: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const oversightPayments = [];
+
+    if (department && department.managers.length > 0) {
+      for (const manager of department.managers) {
+        if (manager.paymentConfig?.oversightRate && manager.user.walletAddress) {
+          const oversightFee = task.paymentAmount * manager.paymentConfig.oversightRate;
+          
+          try {
+            // Queue oversight payment
+            const managerJobId = await queuePayment({
+              taskId: `oversight-${id}`,
+              projectId: project.id,
+              employeeWalletAddress: manager.user.walletAddress,
+              amount: oversightFee,
+              escrowAddress: project.escrow.escrowAddress,
+              encryptedPrivateKey: project.escrow.encryptedPrivateKey,
+            });
+
+            oversightPayments.push({
+              managerId: manager.user.id,
+              managerName: `${manager.user.firstName || ''} ${manager.user.lastName || ''}`.trim() || manager.user.email,
+              amount: oversightFee,
+              rate: manager.paymentConfig.oversightRate,
+              jobId: managerJobId,
+            });
+          } catch (error) {
+            console.error(`Failed to queue oversight payment for manager ${manager.user.id}:`, error);
+          }
+        }
+      }
+    }
+
     res.json({
       success: true,
-      message: 'Task approved and payment queued for processing',
+      message: oversightPayments.length > 0 
+        ? 'Task approved. Employee and manager payments queued for processing'
+        : 'Task approved and payment queued for processing',
       taskId: id,
-      amount: task.paymentAmount,
-      employeeEmail: task.assignedTo.email,
-      paymentJobId: jobId,
+      employeePayment: {
+        amount: task.paymentAmount,
+        employeeEmail: task.assignedTo.email,
+        jobId,
+      },
+      oversightPayments: oversightPayments.length > 0 ? oversightPayments : undefined,
     });
   } catch (error: any) {
     console.error('Error approving task:', error);

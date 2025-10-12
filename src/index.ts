@@ -31,7 +31,11 @@ import chatRouter from "./routes/chat.js";
 import escrowRouter from "./routes/escrow.js";
 import walletsRouter from "./routes/wallets.js";
 import transactionsRouter from "./routes/transactions.js";
+import paymentConfigRouter from "./routes/payment-config.js";
+import recurringPaymentsRouter from "./routes/recurring-payments.js";
+import escrowEnhancedRouter from "./routes/escrow-enhanced.js";
 import { initializeWebSocket } from "./services/websocket.js";
+import { processRecurringPayments, checkLowBalanceAlerts } from "./services/recurringPaymentProcessor.js";
 import { createServer } from 'http';
 import { connectRedis, disconnectRedis } from "./services/redis.js";
 
@@ -117,6 +121,9 @@ app.use("/api/chat", chatRouter);
 app.use("/api", escrowRouter);
 app.use("/api", walletsRouter);
 app.use("/api", transactionsRouter);
+app.use("/api", paymentConfigRouter);
+app.use("/api", recurringPaymentsRouter);
+app.use("/api", escrowEnhancedRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use("/api/dashboard", rateLimiter(200, 60000), queryOptimizer, dashboardRouter);
@@ -143,6 +150,44 @@ const server = createServer(app);
 	try {
 		await connectRedis();
 		initializeWebSocket(server);
+		
+		// Schedule recurring payment processing (daily at 00:00 UTC)
+		const scheduleDailyPayments = () => {
+			const now = new Date();
+			const midnight = new Date(now);
+			midnight.setUTCHours(24, 0, 0, 0);
+			const msUntilMidnight = midnight.getTime() - now.getTime();
+			
+			setTimeout(() => {
+				processRecurringPayments().catch(console.error);
+				setInterval(() => {
+					processRecurringPayments().catch(console.error);
+				}, 24 * 60 * 60 * 1000); // Every 24 hours
+			}, msUntilMidnight);
+		};
+		
+		// Schedule low balance alerts (daily at 08:00 UTC)
+		const scheduleLowBalanceAlerts = () => {
+			const now = new Date();
+			const eightAM = new Date(now);
+			eightAM.setUTCHours(8, 0, 0, 0);
+			if (eightAM < now) {
+				eightAM.setDate(eightAM.getDate() + 1);
+			}
+			const msUntilEightAM = eightAM.getTime() - now.getTime();
+			
+			setTimeout(() => {
+				checkLowBalanceAlerts().catch(console.error);
+				setInterval(() => {
+					checkLowBalanceAlerts().catch(console.error);
+				}, 24 * 60 * 60 * 1000); // Every 24 hours
+			}, msUntilEightAM);
+		};
+		
+		scheduleDailyPayments();
+		scheduleLowBalanceAlerts();
+		console.log('[Server] Scheduled recurring payment jobs');
+		
 		server.listen(PORT, () => {
 			console.log(`[Server] HTTP and WebSocket server running on port ${PORT}`);
 		});
