@@ -6,7 +6,8 @@ import cors from "cors";
 // Allow only your production site
 const allowedOrigins = [
   "https://sizerp-2-0.vercel.app",
-  "https://siz.land"
+  "https://siz.land",
+  "https://erp.siz.land"
 ];
 
 export const corsMiddleware = cors({
