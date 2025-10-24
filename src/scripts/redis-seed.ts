@@ -6,7 +6,13 @@ export default async function main() {
 	try {
 		const roomId = process.env.SEED_ROOM_ID || 'test-room';
 		const userId = process.env.SEED_USER_ID || 'test-user';
-		const { messageId } = await storeMessage(roomId, userId, 'Hello from seed');
+		const result = await storeMessage(roomId, userId, 'Hello from seed');
+		if (!result) {
+			console.log('Redis not available - seed skipped');
+			return;
+		}
+		
+		const { messageId } = result;
 		console.log('Seeded message', { roomId, messageId });
 	} finally {
 		await disconnectRedis();

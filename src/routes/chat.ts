@@ -56,7 +56,12 @@ router.post('/rooms/:roomId/messages', authenticateToken, async (req, res) => {
 		}
 		await assertParticipant(roomId, userId);
 
-		const { messageId, timestamp, key } = await storeMessage(roomId, userId, content, { attachments, replyTo });
+		const result = await storeMessage(roomId, userId, content, { attachments, replyTo });
+		if (!result) {
+			return res.status(503).json({ error: 'Message storage unavailable' });
+		}
+		
+		const { messageId, timestamp, key } = result;
 
 		await (prisma as any).messageMetadata?.create?.({
 			data: {

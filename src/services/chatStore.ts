@@ -33,6 +33,11 @@ export async function storeMessage(
 	options?: { attachments?: string[]; replyTo?: string; reactions?: Record<string, string[]> }
 ) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - message not stored');
+		return null;
+	}
+	
 	const messageId = uuidv4();
 	const key = messageKey(roomId, messageId);
 	const timestamp = Date.now();
@@ -65,6 +70,11 @@ export async function storeMessage(
 
 export async function editMessage(roomId: string, messageId: string, newContent: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - message not edited');
+		return null;
+	}
+	
 	const key = messageKey(roomId, messageId);
 	await client.hSet(key, { content: newContent, edited: 'true' });
 	return key;
@@ -72,6 +82,11 @@ export async function editMessage(roomId: string, messageId: string, newContent:
 
 export async function addReaction(roomId: string, messageId: string, emoji: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - reaction not added');
+		return;
+	}
+	
 	const key = messageKey(roomId, messageId);
 	const raw = await client.hGet(key, 'reactions');
 	const reactions = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
@@ -83,6 +98,11 @@ export async function addReaction(roomId: string, messageId: string, emoji: stri
 
 export async function removeReaction(roomId: string, messageId: string, emoji: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - reaction not removed');
+		return;
+	}
+	
 	const key = messageKey(roomId, messageId);
 	const raw = await client.hGet(key, 'reactions');
 	const reactions = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
@@ -102,6 +122,11 @@ export async function fetchMessages(
 	cursor?: number // timestamp ms; fetch messages with timestamp <= cursor
 ) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - returning empty messages');
+		return { messages: [], nextCursor: undefined as number | undefined };
+	}
+	
 	const end = cursor ?? Number.MAX_SAFE_INTEGER;
 	const ids = await (client as any).zRevRangeByScore(roomIndexKey(roomId), end, 0, {
 		LIMIT: { offset: 0, count: limit }
@@ -128,38 +153,73 @@ export async function fetchMessages(
 // Presence / typing
 export async function joinRoom(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - user not marked as online');
+		return;
+	}
+	
 	await client.sAdd(onlineSetKey(roomId), userId);
 	await client.set(onlineHeartbeatKey(roomId, userId), '1', { EX: ONLINE_TTL_SEC });
 }
 
 export async function heartbeat(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - heartbeat not updated');
+		return;
+	}
+	
 	await client.set(onlineHeartbeatKey(roomId, userId), '1', { EX: ONLINE_TTL_SEC });
 }
 
 export async function leaveRoom(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - user not marked as offline');
+		return;
+	}
+	
 	await client.sRem(onlineSetKey(roomId), userId);
 	await client.del(onlineHeartbeatKey(roomId, userId));
 }
 
 export async function getOnlineUsers(roomId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - returning empty online users');
+		return [];
+	}
+	
 	return client.sMembers(onlineSetKey(roomId));
 }
 
 export async function startTyping(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - typing not tracked');
+		return;
+	}
+	
 	await client.set(typingKey(roomId, userId), '1', { EX: TYPING_TTL_SEC });
 }
 
 export async function stopTyping(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - typing not stopped');
+		return;
+	}
+	
 	await client.del(typingKey(roomId, userId));
 }
 
 export async function getTypingUsers(roomId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - returning empty typing users');
+		return [];
+	}
+	
 	const prefix = `typing:${roomId}:`;
 	const keys = await client.keys(`${prefix}*`);
 	return keys.map(k => k.slice(prefix.length));
@@ -168,16 +228,31 @@ export async function getTypingUsers(roomId: string) {
 // Unread counters
 export async function incrementUnread(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - unread not incremented');
+		return;
+	}
+	
 	await client.incr(unreadKey(roomId, userId));
 }
 
 export async function resetUnread(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - unread not reset');
+		return;
+	}
+	
 	await client.del(unreadKey(roomId, userId));
 }
 
 export async function getUnread(roomId: string, userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - returning 0 unread');
+		return 0;
+	}
+	
 	const v = await client.get(unreadKey(roomId, userId));
 	return Number(v ?? '0');
 }
@@ -185,13 +260,21 @@ export async function getUnread(roomId: string, userId: string) {
 // Sessions
 export async function setSession(userId: string, data: Record<string, unknown>) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - session not stored');
+		return;
+	}
+	
 	await client.set(sessionKey(userId), JSON.stringify(data), { EX: SESSION_TTL_SEC });
 }
 
 export async function getSession(userId: string) {
 	const client = getRedisClient();
+	if (!client) {
+		console.warn('[ChatStore] Redis not available - returning null session');
+		return null;
+	}
+	
 	const v = await client.get(sessionKey(userId));
 	return v ? JSON.parse(v) : null;
 }
-
-

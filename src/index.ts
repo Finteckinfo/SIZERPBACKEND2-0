@@ -135,10 +135,28 @@ app.use("/api/user", rateLimiter(200, 60000), queryOptimizer, userRouter);
 import { getRedisClient } from "./services/redis.js";
 app.get('/health/redis', async (req, res) => {
 	try {
-		const pong = await getRedisClient().ping();
+		const client = getRedisClient();
+		if (!client) {
+			return res.status(503).json({ 
+				status: 'unavailable', 
+				message: 'Redis not configured' 
+			});
+		}
+		
+		if (!client.isOpen) {
+			return res.status(503).json({ 
+				status: 'disconnected', 
+				message: 'Redis not connected' 
+			});
+		}
+		
+		const pong = await client.ping();
 		return res.json({ status: 'ok', pong });
 	} catch (e: any) {
-		return res.status(500).json({ status: 'error', message: e.message });
+		return res.status(500).json({ 
+			status: 'error', 
+			message: e.message 
+		});
 	}
 });
 
@@ -148,7 +166,14 @@ const server = createServer(app);
 // Connect to Redis, then start server
 (async () => {
 	try {
-		await connectRedis();
+		// Try to connect to Redis, but don't fail if it's not available
+		const redisClient = await connectRedis();
+		if (redisClient) {
+			console.log('[Server] Redis connected successfully');
+		} else {
+			console.warn('[Server] Redis not available - some features may be limited');
+		}
+		
 		initializeWebSocket(server);
 		
 		// Schedule recurring payment processing (daily at 00:00 UTC)
@@ -193,7 +218,14 @@ const server = createServer(app);
 		});
 	} catch (err) {
 		console.error('[Server] Failed to start due to Redis error:', err);
-		process.exit(1);
+		console.log('[Server] Starting server without Redis...');
+		
+		// Start server anyway, but with limited functionality
+		initializeWebSocket(server);
+		
+		server.listen(PORT, () => {
+			console.log(`[Server] HTTP and WebSocket server running on port ${PORT} (Redis disabled)`);
+		});
 	}
 })();
 
