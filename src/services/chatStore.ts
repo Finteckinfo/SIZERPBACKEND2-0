@@ -127,10 +127,24 @@ export async function fetchMessages(
 		return { messages: [], nextCursor: undefined as number | undefined };
 	}
 	
-	const end = cursor ?? Number.MAX_SAFE_INTEGER;
-	const ids = await (client as any).zRevRangeByScore(roomIndexKey(roomId), end, 0, {
-		LIMIT: { offset: 0, count: limit }
-	});
+    const end = cursor ?? Number.MAX_SAFE_INTEGER;
+    // node-redis v4 exposes zRangeByScore with REV instead of zRevRangeByScore.
+    // Try zRevRangeByScore first; if not available, fallback to zRangeByScore with REV flag.
+    let ids: string[] = [];
+    const idxKey = roomIndexKey(roomId);
+    const anyClient = client as any;
+    if (typeof anyClient.zRevRangeByScore === 'function') {
+        ids = await anyClient.zRevRangeByScore(idxKey, end, 0, {
+            LIMIT: { offset: 0, count: limit }
+        });
+    } else {
+        // zRangeByScore(key, min, max, options) with { REV: true }
+        // We want scores <= end, so min = 0, max = end, then reverse.
+        ids = await (client as any).zRangeByScore(idxKey, 0, end, {
+            REV: true,
+            LIMIT: { offset: 0, count: limit }
+        });
+    }
 	if (ids.length === 0) return { messages: [], nextCursor: undefined as number | undefined };
 
 	const keys = ids.map((id: string) => messageKey(roomId, id));
