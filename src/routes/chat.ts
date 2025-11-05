@@ -1,12 +1,28 @@
 import { Router } from 'express';
 import { prisma } from '../utils/database.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { checkProjectAccess } from '../utils/accessControl.js';
 import { storeMessage, fetchMessages, startTyping, stopTyping, getTypingUsers, getOnlineUsers, joinRoom, leaveRoom, incrementUnread, resetUnread, getUnread, addReaction, removeReaction } from '../services/chatStore.js';
 
 const router = Router();
 
-// Helper: ensure participant
+// Helper: ensure participant or project access
 async function assertParticipant(roomId: string, userId: string) {
+	// Check if this is a project-based room (format: project-{projectId})
+	if (roomId.startsWith('project-')) {
+		const projectId = roomId.replace('project-', '');
+		console.log(`[Chat] Checking project access for room ${roomId}, projectId: ${projectId}, userId: ${userId}`);
+		const access = await checkProjectAccess(userId, projectId);
+		console.log(`[Chat] Project access result:`, { hasAccess: access.hasAccess, role: access.role, isOwner: access.isOwner });
+		if (!access.hasAccess) {
+			console.log(`[Chat] Access denied for user ${userId} to project ${projectId}`);
+			throw Object.assign(new Error('Forbidden'), { status: 403 });
+		}
+		console.log(`[Chat] Access granted for user ${userId} to project room ${roomId}`);
+		return; // Project access granted
+	}
+	
+	// For regular chat rooms, check participant table
 	const p = await (prisma as any).chatParticipant?.findFirst?.({ where: { roomId, userId } });
 	if (!p) throw Object.assign(new Error('Forbidden'), { status: 403 });
 }
