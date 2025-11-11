@@ -328,6 +328,7 @@ router.get('/projects/:projectId/payment-summary', async (req: Request, res: Res
             firstName: true,
             lastName: true,
             email: true,
+            walletAddress: true,
           },
         },
         blockchainPayment: {

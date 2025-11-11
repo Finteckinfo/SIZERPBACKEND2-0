@@ -196,9 +196,6 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
       if (task.paymentStatus === 'PAID') {
         return res.status(400).json({ error: 'Cannot update payment amount after payment has been released' });
       }
-
-      // Preserve historical value for audit purposes if needed
-      void oldAmount;
     }
 
     const updatedTask = await prisma.task.update({
