@@ -135,8 +135,30 @@ router.get('/projects/:projectId/escrow/funding-needed', async (req: Request, re
     }
 
     const currentBalance = project.escrow ? await getEscrowBalance(project.escrow.escrowAddress) : 0;
-    const allocated = project.allocatedFunds || 0;
-    const available = currentBalance - allocated;
+
+    const [pendingTaskSum, processingTransfers] = await Promise.all([
+      prisma.task.aggregate({
+        where: {
+          department: { projectId },
+          paymentAmount: { not: null },
+          paymentStatus: { in: ['PENDING', 'ALLOCATED'] },
+        },
+        _sum: { paymentAmount: true },
+      }),
+      prisma.blockchainTransaction.aggregate({
+        where: {
+          projectId,
+          status: 'PENDING',
+          type: { in: ['TASK_PAYMENT', 'SALARY_PAYMENT'] },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const pendingTasksTotal = pendingTaskSum._sum.paymentAmount || 0;
+    const processingTotal = processingTransfers._sum.amount || 0;
+    const obligations = pendingTasksTotal + processingTotal;
+    const available = currentBalance - obligations;
 
     // Calculate upcoming recurring payments
     const now = new Date();
@@ -193,8 +215,12 @@ router.get('/projects/:projectId/escrow/funding-needed', async (req: Request, re
 
     res.json({
       currentBalance,
-      allocated,
-      available,
+      obligations: {
+        pendingTasks: pendingTasksTotal,
+        processingTransfers: processingTotal,
+        total: obligations,
+      },
+      available: available < 0 ? 0 : available,
       upcoming: {
         next7Days: upcoming7,
         next30Days: upcoming30,

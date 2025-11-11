@@ -340,44 +340,210 @@ router.get('/projects/:projectId/payment-summary', async (req: Request, res: Res
       },
     });
 
-    // Calculate budget metrics
-    const budgetAmount = project.budgetAmount || 0;
-    const allocatedFunds = project.allocatedFunds || 0;
-    const releasedFunds = project.releasedFunds || 0;
-    const availableFunds = budgetAmount - allocatedFunds;
-    const escrowBalance = project.escrow?.currentBalance || 0;
+    // Build recipient ledger (employees + managers) without relying on project budgets
+    type RecipientLedger = {
+      id: string;
+      userId?: string;
+      name: string;
+      email?: string | null;
+      walletAddress?: string | null;
+      hasTaskSource: boolean;
+      totalAssigned: number;
+      pending: number;
+      processing: number;
+      paid: number;
+      completedTasks: number;
+      taskCount: number;
+      history: Array<{
+        reference: string;
+        amount: number;
+        status: string;
+        type: string;
+        txHash?: string | null;
+        confirmedAt?: Date | null;
+      }>;
+    };
 
-    // Payment breakdown by employee
-    const byEmployee = tasks.reduce((acc: any[], task) => {
-      if (!task.assignedTo) return acc;
-
-      const employeeId = task.assignedTo.id;
-      const existing = acc.find((e) => e.employeeId === employeeId);
-
-      if (existing) {
-        existing.totalAllocated += task.paymentAmount || 0;
-        existing.totalPaid += task.paymentStatus === 'PAID' ? task.paymentAmount || 0 : 0;
-        existing.totalPending += ['PENDING', 'ALLOCATED'].includes(task.paymentStatus)
-          ? task.paymentAmount || 0
-          : 0;
-        existing.taskCount += 1;
-        existing.completedTasks += task.status === 'COMPLETED' || task.status === 'APPROVED' ? 1 : 0;
-      } else {
-        acc.push({
-          employeeId,
-          employeeName: `${task.assignedTo.firstName || ''} ${task.assignedTo.lastName || ''}`.trim() || task.assignedTo.email,
-          totalAllocated: task.paymentAmount || 0,
-          totalPaid: task.paymentStatus === 'PAID' ? task.paymentAmount || 0 : 0,
-          totalPending: ['PENDING', 'ALLOCATED'].includes(task.paymentStatus)
-            ? task.paymentAmount || 0
-            : 0,
-          taskCount: 1,
-          completedTasks: task.status === 'COMPLETED' || task.status === 'APPROVED' ? 1 : 0,
+    const ensureRecipient = (
+      store: Map<string, RecipientLedger>,
+      key: string,
+      data: Omit<RecipientLedger, 'totalAssigned' | 'pending' | 'processing' | 'paid' | 'completedTasks' | 'taskCount' | 'history'>
+    ) => {
+      if (!store.has(key)) {
+        store.set(key, {
+          ...data,
+          totalAssigned: 0,
+          pending: 0,
+          processing: 0,
+          paid: 0,
+          completedTasks: 0,
+          taskCount: 0,
+          history: [],
         });
       }
+      return store.get(key)!;
+    };
 
-      return acc;
-    }, []);
+    const recipients = new Map<string, RecipientLedger>();
+
+    // Aggregate task-based payments (employees)
+    for (const task of tasks) {
+      if (!task.assignedTo || !task.paymentAmount) continue;
+
+      const name = `${task.assignedTo.firstName || ''} ${task.assignedTo.lastName || ''}`.trim() || task.assignedTo.email;
+      const ledger = ensureRecipient(recipients, task.assignedTo.id, {
+        id: task.assignedTo.id,
+        userId: task.assignedTo.id,
+        name,
+        email: task.assignedTo.email,
+        walletAddress: task.assignedTo.walletAddress || null,
+        hasTaskSource: true,
+      });
+
+      ledger.totalAssigned += task.paymentAmount || 0;
+      if (['PENDING', 'ALLOCATED'].includes(task.paymentStatus)) {
+        ledger.pending += task.paymentAmount || 0;
+      } else if (task.paymentStatus === 'PROCESSING') {
+        ledger.processing += task.paymentAmount || 0;
+      } else if (task.paymentStatus === 'PAID') {
+        ledger.paid += task.paymentAmount || 0;
+      }
+
+      ledger.taskCount += 1;
+      if (task.status === 'COMPLETED' || task.status === 'APPROVED') {
+        ledger.completedTasks += 1;
+      }
+    }
+
+    // Fetch blockchain transactions to capture manager/oversight payouts
+    const payoutTransactions = await prisma.blockchainTransaction.findMany({
+      where: {
+        projectId,
+        type: { in: ['TASK_PAYMENT', 'SALARY_PAYMENT'] },
+      },
+      include: {
+        task: {
+          select: {
+            id: true,
+            title: true,
+            assignedTo: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                walletAddress: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const walletAddresses = Array.from(
+      new Set(
+        payoutTransactions
+          .filter((tx) => !tx.task?.assignedTo)
+          .map((tx) => tx.toAddress)
+          .filter(Boolean)
+      )
+    );
+
+    const walletUsers = walletAddresses.length
+      ? await prisma.user.findMany({
+          where: { walletAddress: { in: walletAddresses } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            walletAddress: true,
+          },
+        })
+      : [];
+
+    const walletUserMap = new Map(walletUsers.map((user) => [user.walletAddress, user]));
+
+    let oversightPaidTotal = 0;
+    let oversightProcessingTotal = 0;
+
+    for (const tx of payoutTransactions) {
+      const taskAssignee = tx.task?.assignedTo;
+      let key: string;
+      let ledger: RecipientLedger;
+
+      if (taskAssignee) {
+        key = taskAssignee.id;
+        const name = `${taskAssignee.firstName || ''} ${taskAssignee.lastName || ''}`.trim() || taskAssignee.email;
+        ledger = ensureRecipient(recipients, key, {
+          id: taskAssignee.id,
+          userId: taskAssignee.id,
+          name,
+          email: taskAssignee.email,
+          walletAddress: taskAssignee.walletAddress || null,
+          hasTaskSource: true,
+        });
+      } else {
+        const walletUser = walletUserMap.get(tx.toAddress);
+        key = walletUser?.id || tx.toAddress;
+        const name = walletUser
+          ? `${walletUser.firstName || ''} ${walletUser.lastName || ''}`.trim() || walletUser.email
+          : tx.toAddress;
+
+        ledger = ensureRecipient(recipients, key, {
+          id: key,
+          userId: walletUser?.id,
+          name,
+          email: walletUser?.email,
+          walletAddress: tx.toAddress,
+          hasTaskSource: Boolean(walletUser),
+        });
+
+        if (!ledger.hasTaskSource) {
+          if (tx.status === 'CONFIRMED') {
+            ledger.paid += tx.amount;
+            oversightPaidTotal += tx.amount;
+          } else if (tx.status === 'PENDING') {
+            ledger.processing += tx.amount;
+            oversightProcessingTotal += tx.amount;
+          }
+        }
+      }
+
+      ledger.history.push({
+        reference: tx.task?.title || tx.note || 'Payment',
+        amount: tx.amount,
+        status: tx.status,
+        type: tx.type,
+        txHash: tx.txHash,
+        confirmedAt: tx.confirmedAt,
+      });
+    }
+
+    const recipientsArray = Array.from(recipients.values()).map((recipient) => ({
+      id: recipient.id,
+      userId: recipient.userId,
+      name: recipient.name,
+      email: recipient.email,
+      walletAddress: recipient.walletAddress,
+      totals: {
+        assigned: recipient.totalAssigned,
+        pending: recipient.pending,
+        processing: recipient.processing,
+        paid: recipient.paid,
+      },
+      completedTasks: recipient.completedTasks,
+      taskCount: recipient.taskCount,
+      history: recipient.history.slice(0, 10),
+    }));
+
+    const totalAssigned = recipientsArray.reduce((sum, r) => sum + r.totals.assigned, 0);
+    const totalPending = recipientsArray.reduce((sum, r) => sum + r.totals.pending, 0);
+    const totalProcessing = recipientsArray.reduce((sum, r) => sum + r.totals.processing, 0);
+    const totalPaid = recipientsArray.reduce((sum, r) => sum + r.totals.paid, 0);
+
+    const escrowBalance = project.escrow?.currentBalance || 0;
 
     // Payment status breakdown
     const statusBreakdown = {
@@ -402,27 +568,64 @@ router.get('/projects/:projectId/payment-summary', async (req: Request, res: Res
         paidAt: t.paidAt,
       }));
 
+    const recentPayouts = payoutTransactions
+      .slice(0, 15)
+      .map((tx) => ({
+        txHash: tx.txHash,
+        type: tx.type,
+        amount: tx.amount,
+        status: tx.status,
+        to: tx.task?.assignedTo
+          ? {
+              id: tx.task.assignedTo.id,
+              name: `${tx.task.assignedTo.firstName || ''} ${tx.task.assignedTo.lastName || ''}`.trim() || tx.task.assignedTo.email,
+              email: tx.task.assignedTo.email,
+            }
+          : walletUserMap.get(tx.toAddress)
+          ? {
+              id: walletUserMap.get(tx.toAddress)!.id,
+              name:
+                `${walletUserMap.get(tx.toAddress)!.firstName || ''} ${walletUserMap.get(tx.toAddress)!.lastName || ''}`.trim() ||
+                walletUserMap.get(tx.toAddress)!.email,
+              email: walletUserMap.get(tx.toAddress)!.email,
+            }
+          : {
+              id: tx.toAddress,
+              name: tx.toAddress,
+              email: null,
+            },
+        reference: tx.task?.title || tx.note || 'Payment',
+        confirmedAt: tx.confirmedAt,
+      }));
+
     res.json({
       projectId,
       projectName: project.name,
-      budget: {
-        total: budgetAmount,
-        allocated: allocatedFunds,
-        released: releasedFunds,
-        available: availableFunds,
-        escrowBalance,
-        utilizationPercent: budgetAmount > 0 ? (allocatedFunds / budgetAmount) * 100 : 0,
-      },
-      payments: {
-        totalTasks: tasks.length,
-        statusBreakdown,
-        byEmployee: byEmployee.sort((a, b) => b.totalAllocated - a.totalAllocated),
-        recentPayments,
-      },
       escrow: {
         address: project.escrow?.escrowAddress,
         funded: project.escrowFunded,
         status: project.escrow?.status,
+        balance: escrowBalance,
+      },
+      payouts: {
+        totalRecipients: recipientsArray.length,
+        totals: {
+          assigned: totalAssigned,
+          pending: totalPending,
+          processing: totalProcessing,
+          paid: totalPaid,
+          oversight: {
+            paid: oversightPaidTotal,
+            processing: oversightProcessingTotal,
+          },
+        },
+        statusBreakdown,
+        byRecipient: recipientsArray.sort((a, b) => b.totals.assigned - a.totals.assigned),
+        recent: recentPayouts,
+      },
+      tasksSummary: {
+        totalWithPayments: tasks.length,
+        recentPayments,
       },
     });
   } catch (error: any) {

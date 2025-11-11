@@ -35,9 +35,6 @@ router.post('/projects/:projectId/recurring-payments', async (req: Request, res:
     // Calculate total allocation and validate budget
     const start = new Date(startDate);
     const end = endDate ? new Date(endDate) : null;
-    const periodsInMonth = frequency === 'WEEKLY' ? 4 : frequency === 'BIWEEKLY' ? 2 : 1;
-    const monthlyAllocation = amount * periodsInMonth;
-
     // Create recurring payment
     const nextDate = calculateNextPaymentDate(start, frequency);
     const recurring = await prisma.recurringPayment.create({
@@ -67,23 +64,12 @@ router.post('/projects/:projectId/recurring-payments', async (req: Request, res:
       },
     });
 
-    // Allocate funds
-    await prisma.project.update({
-      where: { id: projectId },
-      data: {
-        allocatedFunds: {
-          increment: monthlyAllocation,
-        },
-      },
-    });
-
     res.json({
       id: recurring.id,
       amount: recurring.amount,
       frequency: recurring.frequency,
       nextPaymentDate: recurring.nextPaymentDate,
       estimatedTotal: calculateEstimatedTotal(amount, frequency, start, end),
-      fundsAllocated: monthlyAllocation,
     });
   } catch (error: any) {
     console.error('Error creating recurring payment:', error);
@@ -277,22 +263,13 @@ router.delete('/recurring-payments/:id/cancel', async (req: Request, res: Respon
 
     // Calculate refund amount (allocated but not paid)
     const periodsInMonth = payment.frequency === 'WEEKLY' ? 4 : payment.frequency === 'BIWEEKLY' ? 2 : 1;
-    const monthlyAllocation = payment.amount * periodsInMonth;
-    const refundAmount = monthlyAllocation; // Refund one month's allocation
+    const refundAmount = payment.amount * periodsInMonth;
 
-    // Update status and refund allocated funds
+    // Update status and report refund amount (no budget to adjust)
     await prisma.$transaction([
       prisma.recurringPayment.update({
         where: { id },
         data: { status: 'CANCELLED' },
-      }),
-      prisma.project.update({
-        where: { id: payment.projectId },
-        data: {
-          allocatedFunds: {
-            decrement: refundAmount,
-          },
-        },
       }),
     ]);
 

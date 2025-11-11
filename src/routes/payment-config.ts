@@ -91,18 +91,7 @@ router.post('/user-roles/:userRoleId/payment-config', async (req: Request, res: 
         },
       });
 
-      // Allocate funds for first 30 days
-      const periodsInMonth = salaryFrequency === 'WEEKLY' ? 4 : salaryFrequency === 'BIWEEKLY' ? 2 : 1;
-      const monthlyAllocation = salaryAmount * periodsInMonth;
-
-      await prisma.project.update({
-        where: { id: userRole.projectId },
-        data: {
-          allocatedFunds: {
-            increment: monthlyAllocation,
-          },
-        },
-      });
+      // No project-level budget allocation – escrow balances are assessed per payment
     }
 
     // Calculate estimated monthly

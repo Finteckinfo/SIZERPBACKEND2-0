@@ -270,18 +270,7 @@ router.put('/:id/respond', authenticateToken, async (req: Request, res: Response
             },
           });
 
-          // Allocate funds for first month
-          const periodsInMonth = invite.salaryFrequency === 'WEEKLY' ? 4 : invite.salaryFrequency === 'BIWEEKLY' ? 2 : 1;
-          const monthlyAllocation = invite.salaryAmount * periodsInMonth;
-
-          await prisma.project.update({
-            where: { id: invite.projectId },
-            data: {
-              allocatedFunds: {
-                increment: monthlyAllocation,
-              },
-            },
-          });
+          // Escrow funding is managed per payout; no bulk budget allocation required
         }
       }
 

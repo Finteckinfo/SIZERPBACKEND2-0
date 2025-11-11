@@ -74,23 +74,6 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
       if (isNaN(parsedAmount) || parsedAmount < 0) {
         return res.status(400).json({ error: 'Invalid payment amount' });
       }
-
-      // Check budget availability
-      const project = await prisma.project.findUnique({
-        where: { id: department.projectId },
-      });
-
-      if (project && project.budgetAmount) {
-        const newAllocatedTotal = (project.allocatedFunds || 0) + parsedAmount;
-        
-        if (newAllocatedTotal > project.budgetAmount) {
-          return res.status(400).json({ 
-            error: 'Insufficient budget',
-            available: project.budgetAmount - (project.allocatedFunds || 0),
-            requested: parsedAmount,
-          });
-        }
-      }
     }
 
     const task = await prisma.task.create({
@@ -128,18 +111,6 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
         }
       }
     });
-
-    // Update project allocated funds if payment amount provided
-    if (paymentAmount) {
-      await prisma.project.update({
-        where: { id: department.projectId },
-        data: {
-          allocatedFunds: {
-            increment: parseFloat(paymentAmount),
-          },
-        },
-      });
-    }
 
     // Broadcast task creation
     broadcastTaskCreated(task.department.projectId, task, req.user!.id);
@@ -214,7 +185,6 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
     }
 
     // Validate payment amount update
-    let paymentDelta = 0;
     if (paymentAmount !== undefined && paymentAmount !== null) {
       const newAmount = parseFloat(paymentAmount);
       
@@ -227,27 +197,8 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
         return res.status(400).json({ error: 'Cannot update payment amount after payment has been released' });
       }
 
-      const oldAmount = task.paymentAmount || 0;
-      paymentDelta = newAmount - oldAmount;
-
-      // Check budget availability for increased amount
-      if (paymentDelta > 0) {
-        const project = await prisma.project.findUnique({
-          where: { id: task.department.projectId },
-        });
-
-        if (project && project.budgetAmount) {
-          const newAllocatedTotal = (project.allocatedFunds || 0) + paymentDelta;
-          
-          if (newAllocatedTotal > project.budgetAmount) {
-            return res.status(400).json({ 
-              error: 'Insufficient budget for payment increase',
-              available: project.budgetAmount - (project.allocatedFunds || 0),
-              requested: paymentDelta,
-            });
-          }
-        }
-      }
+      // Preserve historical value for audit purposes if needed
+      void oldAmount;
     }
 
     const updatedTask = await prisma.task.update({
@@ -284,18 +235,6 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
         }
       }
     });
-
-    // Update project allocated funds if payment amount changed
-    if (paymentDelta !== 0) {
-      await prisma.project.update({
-        where: { id: task.department.projectId },
-        data: {
-          allocatedFunds: {
-            increment: paymentDelta,
-          },
-        },
-      });
-    }
 
     // Broadcast task update
     broadcastTaskUpdated(task.department.projectId, id, req.body, req.user!.id);

@@ -288,17 +288,41 @@ router.get('/projects/:projectId/escrow/balance', async (req: Request, res: Resp
       },
     });
 
-    // Calculate available funds
-    const allocated = project.allocatedFunds || 0;
-    const released = project.releasedFunds || 0;
-    const available = blockchainBalance - allocated;
+    // Calculate obligations based on pending tasks and in-flight transactions
+    const [pendingTaskSum, processingTransactions] = await Promise.all([
+      prisma.task.aggregate({
+        where: {
+          department: { projectId },
+          paymentAmount: { not: null },
+          paymentStatus: { in: ['PENDING', 'ALLOCATED'] },
+        },
+        _sum: { paymentAmount: true },
+      }),
+      prisma.blockchainTransaction.aggregate({
+        where: {
+          projectId,
+          status: 'PENDING',
+          type: { in: ['TASK_PAYMENT', 'SALARY_PAYMENT'] },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const taskHold = pendingTaskSum._sum.paymentAmount || 0;
+    const processingHold = processingTransactions._sum.amount || 0;
+    const totalObligations = taskHold + processingHold;
+    const netAvailable = blockchainBalance - totalObligations;
 
     res.json({
       escrowAddress: project.escrow.escrowAddress,
       balance: blockchainBalance,
-      allocated,
-      released,
-      available,
+      obligations: {
+        pendingTasks: taskHold,
+        processingTransfers: processingHold,
+        total: totalObligations,
+      },
+      released: project.releasedFunds || 0,
+      netAvailable: netAvailable < 0 ? 0 : netAvailable,
       funded: project.escrowFunded,
     });
   } catch (error: any) {
