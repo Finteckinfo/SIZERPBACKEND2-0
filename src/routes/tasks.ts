@@ -609,6 +609,8 @@ router.get('/kanban/all-projects', authenticateToken, async (req: Request, res: 
         progress: true,
         order: true,
         assignedRoleId: true,
+        departmentId: true,
+        createdByRoleId: true,
         checklistCount: true,
         checklistCompleted: true,
         createdAt: true,
@@ -662,15 +664,48 @@ router.get('/kanban/all-projects', authenticateToken, async (req: Request, res: 
       canAssignTasks: hasOwnerRole || hasManagerRole
     };
 
+    // Build helper maps for permission checks
+    const userRoleIds = new Set(userProjects.map(up => up.id));
+    const ownerProjectIds = new Set(userProjects.filter(up => up.role === 'PROJECT_OWNER').map(up => up.projectId));
+    const managerProjectIds = new Set(userProjects.filter(up => up.role === 'PROJECT_MANAGER').map(up => up.projectId));
+    const projectRolesMap = new Map<string, typeof userProjects>();
+    userProjects.forEach(up => {
+      const roles = projectRolesMap.get(up.projectId) || [];
+      roles.push(up);
+      projectRolesMap.set(up.projectId, roles);
+    });
+
+    const filteredTasks = tasks.filter(task => {
+      const projectId = task.department.project.id;
+      if (ownerProjectIds.has(projectId) || managerProjectIds.has(projectId)) {
+        return true;
+      }
+      if (task.assignedRoleId && userRoleIds.has(task.assignedRoleId)) {
+        return true;
+      }
+      if (task.createdByRoleId && userRoleIds.has(task.createdByRoleId)) {
+        return true;
+      }
+      return false;
+    });
+
     // Transform tasks with permission checks and user-friendly format
-    const transformedTasks = tasks.map(task => {
-      const userRole = userProjects.find(up => up.projectId === task.department.project.id);
-      const canEdit = userRole?.role === 'PROJECT_OWNER' || 
-                     userRole?.role === 'PROJECT_MANAGER' || 
-                     task.assignedRoleId === userRole?.projectId;
+    const transformedTasks = filteredTasks.map(task => {
+      const projectId = task.department.project.id;
+      const projectRoles = projectRolesMap.get(projectId) || [];
+      const isOwner = ownerProjectIds.has(projectId);
+      const isManager = managerProjectIds.has(projectId);
+      const isAssigned = task.assignedRoleId ? userRoleIds.has(task.assignedRoleId) : false;
+      const isCreator = task.createdByRoleId ? userRoleIds.has(task.createdByRoleId) : false;
+
+      const canEdit = isOwner || isManager || isAssigned || isCreator;
+      const canAssign = isOwner || isManager;
+      const canDelete = isOwner || (isManager && isCreator);
 
       return {
         ...task,
+        projectId,
+        departmentId: task.department.id,
         assignedUser: task.assignedRole?.user ? {
           id: task.assignedRole.user.id,
           email: task.assignedRole.user.email,
@@ -686,8 +721,8 @@ router.get('/kanban/all-projects', authenticateToken, async (req: Request, res: 
         },
         canView: true,
         canEdit,
-        canAssign: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER',
-        canDelete: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER'
+        canAssign,
+        canDelete
       };
     });
 
@@ -786,6 +821,8 @@ router.get('/kanban/:projectId', authenticateToken, async (req: Request, res: Re
         assignedRoleId: true,
         order: true,
         progress: true,
+        departmentId: true,
+        createdByRoleId: true,
         createdAt: true,
         updatedAt: true,
         assignedRole: {
@@ -807,7 +844,15 @@ router.get('/kanban/:projectId', authenticateToken, async (req: Request, res: Re
             id: true,
             name: true,
             color: true,
-            type: true
+            type: true,
+            project: {
+              select: {
+                id: true,
+                name: true,
+                type: true,
+                priority: true
+              }
+            }
           }
         }
       },
@@ -818,54 +863,71 @@ router.get('/kanban/:projectId', authenticateToken, async (req: Request, res: Re
       ]
     });
 
-    // Group tasks by status for kanban columns
-    const columns = {
-      PENDING: tasks.filter(task => task.status === 'PENDING'),
-      IN_PROGRESS: tasks.filter(task => task.status === 'IN_PROGRESS'),
-      COMPLETED: tasks.filter(task => task.status === 'COMPLETED'),
-      APPROVED: tasks.filter(task => task.status === 'APPROVED')
-    };
-
-    // Get user permissions for this project
-    const userRole = await prisma.userRole.findFirst({
+    // Get user roles for this project
+    const userRoles = await prisma.userRole.findMany({
       where: {
         userId: req.user!.id,
         projectId: projectId
-      },
-      select: { role: true }
+      }
     });
 
-    const userPermissions = {
-      canCreateTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER',
-      canEditAllTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER',
-      canDeleteTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER',
-      canAssignTasks: userRole?.role === 'PROJECT_OWNER' || userRole?.role === 'PROJECT_MANAGER'
+    if (userRoles.length === 0) {
+      return res.status(403).json({ error: 'Access denied to this project' });
+    }
+
+    const userRoleIds = new Set(userRoles.map(role => role.id));
+    const isOwner = userRoles.some(role => role.role === 'PROJECT_OWNER');
+    const isManager = userRoles.some(role => role.role === 'PROJECT_MANAGER');
+
+    const filteredTasks = tasks.filter(task => {
+      if (isOwner || isManager) {
+        return true;
+      }
+      if (task.assignedRoleId && userRoleIds.has(task.assignedRoleId)) {
+        return true;
+      }
+      if (task.createdByRoleId && userRoleIds.has(task.createdByRoleId)) {
+        return true;
+      }
+      return false;
+    });
+
+    const transformedTasks = filteredTasks.map(task => {
+      const canEdit = isOwner || isManager || (task.assignedRoleId ? userRoleIds.has(task.assignedRoleId) : false) || (task.createdByRoleId ? userRoleIds.has(task.createdByRoleId) : false);
+      const canAssign = isOwner || isManager;
+      const canDelete = isOwner || (isManager && (task.createdByRoleId ? userRoleIds.has(task.createdByRoleId) : false));
+
+      return {
+        ...task,
+        projectId,
+        departmentId: task.department.id,
+        assignedUser: task.assignedRole?.user || null,
+        canView: true,
+        canEdit,
+        canAssign,
+        canDelete
+      };
+    });
+
+    // Group tasks by status for kanban columns
+    const columns = {
+      PENDING: transformedTasks.filter(task => task.status === 'PENDING'),
+      IN_PROGRESS: transformedTasks.filter(task => task.status === 'IN_PROGRESS'),
+      COMPLETED: transformedTasks.filter(task => task.status === 'COMPLETED'),
+      APPROVED: transformedTasks.filter(task => task.status === 'APPROVED')
     };
 
-    // Transform tasks to include assignedUser object
-    const transformedColumns = {
-      PENDING: columns.PENDING.map(task => ({
-        ...task,
-        assignedUser: task.assignedRole?.user || null
-      })),
-      IN_PROGRESS: columns.IN_PROGRESS.map(task => ({
-        ...task,
-        assignedUser: task.assignedRole?.user || null
-      })),
-      COMPLETED: columns.COMPLETED.map(task => ({
-        ...task,
-        assignedUser: task.assignedRole?.user || null
-      })),
-      APPROVED: columns.APPROVED.map(task => ({
-        ...task,
-        assignedUser: task.assignedRole?.user || null
-      }))
+    const userPermissions = {
+      canCreateTasks: isOwner || isManager,
+      canEditAllTasks: isOwner || isManager,
+      canDeleteTasks: isOwner || isManager,
+      canAssignTasks: isOwner || isManager
     };
 
     res.json({
       projectId,
-      columns: transformedColumns,
-      totalTasks: tasks.length,
+      columns,
+      totalTasks: transformedTasks.length,
       userPermissions
     });
 
