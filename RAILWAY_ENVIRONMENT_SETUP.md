@@ -17,18 +17,17 @@ DATABASE_URL="${{Postgres-yzIH.DATABASE_PUBLIC_URL}}"
 
 ### Clerk Authentication Configuration
 ```
-CLERK_WEBHOOK_SECRET="whsec_VM1g9vmpZo3pBcwtaQ4TP77X77NUkAQi"
-CLERK_ISSUER_URL="https://pumped-sheep-45.clerk.accounts.dev"
-CLERK_JWKS_URL="https://pumped-sheep-45.clerk.accounts.dev/.well-known/jwks.json"
-CLERK_PUBLISHABLE_KEY="pk_test_cHVtcGVkLXNoZWVwLTQ1LmNsZXJrLmFjY291bnRzLmRldiQ"
-CLERK_SECRET_KEY="sk_test_LTagW3LCrISpQxzO1zZuCDcqLf8Yew2hfusYPbzbZy"
+CLERK_WEBHOOK_SECRET="whsec_xxxxxxxxxxxxxxxxxxx"
+CLERK_ISSUER_URL="https://xxxxxxxxxxx.clerk.accounts.dev"
+CLERK_JWKS_URL="https://xxxxxxxxxxxxx.accounts.dev/.xxxxxxxx/jwks.json"
+CLERK_PUBLISHABLE_KEY="pk_test_xxxxxxxxxxxxxxxxx"
+CLERK_SECRET_KEY="sk_test_xxxxxxxxxxx"
 ```
 
 ### JWT Configuration (NEW - Replaces CLERK_JWT_KEY)
 ```
 CLERK_JWKS_PUBLIC_KEY="MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1xbJ4qo8K9XPbX9ibJmJ
-inR1mDrhzGLu7ZTr8HPT0gY22rNx7cPd7G4y1pTKjjLmNC35DtRURJ/+FlQdTliT
-vJhuV63G1dqfc8GS9gEHrUp1AVoJ9LAOWoeApuUBMNpcRcc/oR+P+cE380JGI22w
+inR1mDrhzGLu7ZTr8HPTxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxw
 82crdZWCj6BPap8zWFLYpGCu1VjK9O2iAmC2lr8gWJSJ+AKOzVZo9Fvpvkx694Su
 wAMVnJD/OSPBRZyAZBGYtjx0AGs6bSh0IJyiWta2uDJ8BxVT6SeshieHTWd/yMu0
 MaHriJ3hucZcbLYCYocEgM2fS4ez9ohXtDADYjfa5U19HfH6fSpVAzaP+VaVdJLX
@@ -37,7 +36,7 @@ LwIDAQAB"
 
 ### Optional: Custom Audience
 ```
-CLERK_AUDIENCE="https://sizerpbackend2-0-production.up.railway.app"
+CLERK_AUDIENCE="https://xxxxxxxxxxxxxxx.up.railway.app"
 ```
 
 ## JWT Template Configuration
@@ -50,7 +49,7 @@ In your Clerk Dashboard, ensure your JWT template matches this structure:
   "email": "{{user.primary_email_address.email}}",
   "first_name": "{{user.first_name}}",
   "last_name": "{{user.last_name}}",
-  "aud": "https://sizerpbackend2-0-production.up.railway.app"
+  "aud": "https://xxxxxxxxxxxxxxxxxx.up.railway.app"
 }
 ```
 
@@ -66,7 +65,7 @@ In your Clerk Dashboard, ensure your JWT template matches this structure:
 ## Backend URL Configuration
 
 Your backend is accessible at:
-- **Production**: `https://sizerpbackend2-0-production.up.railway.app`
+- **Production**: `https://xxxxxxxxxxxxxx.up.railway.app`
 - **Development**: `http://localhost:3000`
 
 ## Frontend Requirements Met
