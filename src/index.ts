@@ -19,6 +19,7 @@ import userRouter from "./routes/user.js";
 
 import configRouter from "./routes/config.js";
 import usersRouter from "./routes/users.js";
+import adminUsersRouter from "./routes/admin-users.js";
 import projectsRouter from "./routes/projects.js";
 import departmentsRouter from "./routes/departments.js";
 import rolesRouter from "./routes/roles.js";
@@ -88,6 +89,8 @@ app.use("/api/config", configRouter);
 
 // User management routes
 app.use("/api/users", usersRouter);
+// Admin-only user management (secure)
+app.use("/api/admin/users", adminUsersRouter);
 
 // Wallet routes
 app.use("/api/user/wallet", walletRouter);
