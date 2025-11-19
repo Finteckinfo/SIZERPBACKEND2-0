@@ -11,7 +11,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-change-in-prod
 
 /**
  * 🎯 CRITICAL ENDPOINT: Session Synchronization
- * This endpoint creates/updates users in the database when they authenticate via Clerk
+ * This endpoint creates/updates users in the database when they authenticate via NextAuth
  * This prevents the login loop where users get 401 errors because they don't exist in the backend
  */
 router.post('/sync-user', authenticateToken, async (req: Request, res: Response) => {

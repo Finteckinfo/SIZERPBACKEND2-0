@@ -2,7 +2,6 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { parse } from 'url';
 import jwt from 'jsonwebtoken';
-import jwksClient from 'jwks-rsa';
 
 // WebSocket connection manager
 class WebSocketManager {
@@ -34,31 +33,17 @@ class WebSocketManager {
       const token = url.query.token as string;
       
       if (!token) {
+        console.error('WebSocket: No token provided');
         return false;
       }
 
-      // Verify JWT token (same logic as auth middleware)
-      const client = jwksClient({
-        jwksUri: process.env.CLERK_JWKS_URL || 'https://pumped-sheep-45.clerk.accounts.dev/.well-known/jwks.json'
-      });
-
-      const getKey = (header: any, callback: any) => {
-        client.getSigningKey(header.kid, (err, key) => {
-          if (err) {
-            callback(err);
-            return;
-          }
-          const signingKey = key?.getPublicKey();
-          callback(null, signingKey);
-        });
-      };
-
+      // Verify NextAuth JWT token using the secret
+      const NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || 'fallback-nextauth-secret-change-in-production';
+      
       const decoded = await new Promise((resolve, reject) => {
-        jwt.verify(token, getKey, {
-          issuer: process.env.CLERK_ISSUER_URL,
-          audience: process.env.CLERK_AUDIENCE,
-          algorithms: ['RS256']
-        }, (err, decoded) => {
+        jwt.verify(token, NEXTAUTH_SECRET, {
+          algorithms: ['HS256']
+        }, (err: any, decoded: any) => {
           if (err) reject(err);
           else resolve(decoded);
         });

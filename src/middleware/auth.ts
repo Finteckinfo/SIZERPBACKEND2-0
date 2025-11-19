@@ -1,34 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import { PrismaClient, Role } from '@prisma/client';
-import { createClerkClient } from '@clerk/backend';
 import jwt from 'jsonwebtoken';
-import jwksClient from 'jwks-rsa';
 
 const prisma = new PrismaClient();
-const clerk = (createClerkClient as any)({
-	secretKey: process.env.CLERK_SECRET_KEY,
-	publishableKey: process.env.CLERK_PUBLISHABLE_KEY
-});
 
-// Resolve JWKS per issuer to support multiple Clerk instances if needed
-function getJwksClientForIssuer(issuer: string) {
-    const jwksUri = `${issuer.replace(/\/$/, '')}/.well-known/jwks.json`;
-    return jwksClient({ jwksUri });
-}
-
-function getKeyWithIssuer(issuer: string) {
-    const client = getJwksClientForIssuer(issuer);
-    return function getKey(header: any, callback: any) {
-        client.getSigningKey(header.kid, function(err, key) {
-            if (err) {
-                callback(err);
-                return;
-            }
-            const signingKey = key?.getPublicKey();
-            callback(null, signingKey);
-        });
-    };
-}
+// NextAuth secret for JWT validation
+const NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET || 'fallback-nextauth-secret-change-in-production';
 
 // Extend the Express Request interface to include user
 declare global {
@@ -44,94 +21,73 @@ declare global {
 	}
 }
 
+/**
+ * NextAuth JWT-based authentication middleware
+ * Validates session token from cookies and syncs user to database
+ */
 export const authenticateToken = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		const authHeader = req.headers.authorization;
-		if (!authHeader || !authHeader.startsWith('Bearer ')) {
-			return res.status(401).json({ error: 'No token provided' });
+		// 1) Get NextAuth session token from cookies
+		const token =
+			req.cookies?.['next-auth.session-token'] ||
+			req.cookies?.['__Secure-next-auth.session-token'];
+
+		if (!token) {
+			return res.status(401).json({ error: 'No session token provided' });
 		}
 
-		const token = authHeader.substring(7);
+		// 2) Verify NextAuth JWT
+		let decoded: any;
+		try {
+			decoded = jwt.verify(token, NEXTAUTH_SECRET);
+		} catch (err) {
+			console.error('[Auth] JWT verification failed:', err);
+			return res.status(401).json({ error: 'Invalid or expired session token' });
+		}
 
-        // 1) Decode payload to get issuer and audience
-        const payloadJson = Buffer.from(token.split('.')[1] || '', 'base64').toString('utf8');
-        let unverified: any;
-        try {
-            unverified = JSON.parse(payloadJson);
-        } catch {
-            return res.status(401).json({ error: 'Invalid token payload' });
-        }
+		// 3) Extract user info from token
+		const email = decoded.email;
+		const sub = decoded.sub || decoded.id;
+		const name = decoded.name;
 
-        const tokenIssuer = (unverified?.iss || '').replace(/\/$/, '');
-        const expectedIssuer = (process.env.CLERK_ISSUER_URL || '').replace(/\/$/, '');
-        if (!tokenIssuer || (expectedIssuer && tokenIssuer !== expectedIssuer)) {
-            return res.status(401).json({ error: 'Issuer mismatch' });
-        }
+		if (!email) {
+			return res.status(401).json({ error: 'Session token missing email' });
+		}
 
-        // Audience allowlist: env audience plus any additional allowed values
-        const envAudience = (process.env.CLERK_AUDIENCE || '').replace(/\/$/, '');
-        const allowedAudiences = new Set<string>([
-            envAudience,
-            'https://sizerpbackend2-0-production.up.railway.app'
-        ].filter(Boolean));
+		// 4) Sync / fetch user in Prisma
+		try {
+			let dbUser = await prisma.user.findUnique({
+				where: { email },
+				select: { id: true, email: true, firstName: true, lastName: true }
+			});
 
-        // 2) Verify signature via JWKS for that issuer
-        try {
-            const decoded = await new Promise((resolve, reject) => {
-                jwt.verify(token, getKeyWithIssuer(tokenIssuer), {
-                    issuer: tokenIssuer,
-                    audience: Array.from(allowedAudiences) as [string, ...string[]],
-                    algorithms: ['RS256'],
-                    clockTolerance: 90
-                }, (err: any, decoded: any) => {
-                    if (err) return reject(err);
-                    resolve(decoded);
-                });
-            });
+			if (!dbUser) {
+				// Create user from NextAuth session
+				const nameParts = name ? name.split(' ') : [];
+				dbUser = await prisma.user.create({
+					data: {
+						id: sub,
+						email,
+						firstName: nameParts[0] || null,
+						lastName: nameParts.slice(1).join(' ') || null,
+					},
+					select: { id: true, email: true, firstName: true, lastName: true }
+				});
+				console.log('[Auth] Created new user from NextAuth session:', email);
+			}
 
-            // 3) Extract claims
-            const userId = (decoded as any).sub || (decoded as any).user_id;
-            const email = (decoded as any).email;
-            const firstName = (decoded as any).first_name || (decoded as any).given_name;
-            const lastName = (decoded as any).last_name || (decoded as any).family_name;
+			req.user = {
+				id: dbUser.id,
+				email: dbUser.email,
+				firstName: dbUser.firstName || undefined,
+				lastName: dbUser.lastName || undefined,
+			};
 
-            if (!userId || !email) {
-                return res.status(401).json({ error: 'Invalid token payload' });
-            }
-
-            // 4) DB user sync (separate error handling -> not 401)
-            try {
-                let dbUser = await prisma.user.findUnique({
-                    where: { email },
-                    select: { id: true, email: true, firstName: true, lastName: true }
-                });
-
-                if (!dbUser) {
-                    dbUser = await prisma.user.create({
-                        data: {
-                            id: userId,
-                            email,
-                            firstName: firstName || null,
-                            lastName: lastName || null
-                        },
-                        select: { id: true, email: true, firstName: true, lastName: true }
-                    });
-                }
-
-                req.user = {
-                    id: dbUser.id,
-                    email: dbUser.email,
-                    firstName: dbUser.firstName || undefined,
-                    lastName: dbUser.lastName || undefined
-                };
-            } catch (dbErr) {
-                return res.status(503).json({ error: 'Service unavailable', details: 'Database error' });
-            }
-
-            return next();
-        } catch (verifyErr) {
-            return res.status(401).json({ error: 'Invalid or expired token' });
-        }
+			return next();
+		} catch (dbErr) {
+			console.error('[Auth] Database error:', dbErr);
+			return res.status(503).json({ error: 'Service unavailable', details: 'Database error' });
+		}
 	} catch (error) {
 		console.error('[Auth] Middleware fatal error:', error);
 		return res.status(500).json({ error: 'Authentication failed' });
