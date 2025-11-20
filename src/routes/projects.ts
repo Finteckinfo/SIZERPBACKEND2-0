@@ -673,7 +673,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
   } = req.body;
 
   try {
-    // Use authenticated user from Clerk token
+    // Use authenticated user from NextAuth session token
     const authenticatedUserId = req.user?.id;
     if (!authenticatedUserId) {
       return res.status(401).json({ error: 'Authentication required' });
