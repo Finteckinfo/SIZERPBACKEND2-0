@@ -11,14 +11,15 @@ import {
   rateLimiter, 
   memoryMonitor 
 } from "./middleware/performance.js";
-import webhookRouter from "./routes/webhook.js";
 import authRouter from "./routes/auth.js";
+import sessionRouter from "./routes/session.js";
 import walletRouter from "./routes/wallet.js";
 import dashboardRouter from "./routes/dashboard.js";
 import userRouter from "./routes/user.js";
 
 import configRouter from "./routes/config.js";
 import usersRouter from "./routes/users.js";
+import adminUsersRouter from "./routes/admin-users.js";
 import projectsRouter from "./routes/projects.js";
 import departmentsRouter from "./routes/departments.js";
 import rolesRouter from "./routes/roles.js";
@@ -41,9 +42,6 @@ import { connectRedis, disconnectRedis } from "./services/redis.js";
 
 dotenv.config();
 const app = express();
-
-// Webhooks (raw body required) must be mounted before JSON body parser
-app.use("/clerk", webhookRouter);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
@@ -75,6 +73,7 @@ app.set('trust proxy', 1);
 
 // Authentication routes (after middleware setup)
 app.use("/api/auth", authRouter);
+app.use("/api/auth", sessionRouter);
 
 // Security middleware only on app routes
 app.use("/app", securityMiddleware);
@@ -88,6 +87,8 @@ app.use("/api/config", configRouter);
 
 // User management routes
 app.use("/api/users", usersRouter);
+// Admin-only user management (secure)
+app.use("/api/admin/users", adminUsersRouter);
 
 // Wallet routes
 app.use("/api/user/wallet", walletRouter);
