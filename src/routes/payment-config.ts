@@ -91,7 +91,7 @@ router.post('/user-roles/:userRoleId/payment-config', async (req: Request, res: 
         },
       });
 
-      // No project-level budget allocation – escrow balances are assessed per payment
+      // No project-level budget allocation - escrow balances are assessed per payment
     }
 
     // Calculate estimated monthly

@@ -1,16 +1,31 @@
 import { Router, Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
 import { authenticateToken } from "../middleware/auth.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { 
+  validateEmail, 
+  validatePassword, 
+  validateName,
+  validateWalletAddress,
+  sanitizeString,
+  checkLoginRateLimit,
+  recordFailedLogin,
+  resetLoginAttempts
+} from "../utils/validation.js";
+import { prisma } from "../utils/prisma.js";
+import { getSecurityConfig } from "../config/security.js";
+import { tokenBlacklist } from "../utils/tokenBlacklist.js";
+import { securityMonitor } from "../utils/securityMonitor.js";
+import { 
+  sanitizeEmail, 
+  detectSQLInjection, 
+  detectXSS 
+} from "../utils/inputSanitizer.js";
 
 const router = Router();
-const prisma = new PrismaClient();
-
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-change-in-production';
 
 /**
- * 🎯 CRITICAL ENDPOINT: Session Synchronization
+ * CRITICAL ENDPOINT: Session Synchronization
  * This endpoint creates/updates users in the database when they authenticate via NextAuth
  * This prevents the login loop where users get 401 errors because they don't exist in the backend
  */
@@ -23,7 +38,7 @@ router.post('/sync-user', authenticateToken, async (req: Request, res: Response)
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    console.log('🔄 Syncing user session:', { 
+    console.log('[Auth] Syncing user session:', { 
       userId: user.id, 
       email: user.email,
       firstName: user.firstName,
@@ -47,7 +62,7 @@ router.post('/sync-user', authenticateToken, async (req: Request, res: Response)
       }
     });
 
-    console.log('✅ User session synced successfully:', { 
+    console.log('[Auth] User session synced successfully:', { 
       userId: syncedUser.id, 
       email: syncedUser.email 
     });
@@ -63,7 +78,7 @@ router.post('/sync-user', authenticateToken, async (req: Request, res: Response)
     });
 
   } catch (error) {
-    console.error('❌ User session sync failed:', error);
+    console.error('[Auth] User session sync failed:', error);
     res.status(500).json({ 
       error: 'Failed to sync user session',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
@@ -105,7 +120,7 @@ router.get('/profile', authenticateToken, async (req: Request, res: Response) =>
     });
 
   } catch (error) {
-    console.error('❌ Get profile failed:', error);
+    console.error('[Auth] Get profile failed:', error);
     res.status(500).json({ 
       error: 'Failed to get user profile',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
@@ -123,43 +138,92 @@ router.post('/register', async (req: Request, res: Response) => {
   try {
     const { email, password, firstName, lastName } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    // Validate email
+    const emailValidation = validateEmail(email);
+    if (!emailValidation.isValid) {
+      return res.status(400).json({ 
+        error: 'Invalid email', 
+        details: emailValidation.errors 
+      });
     }
+
+    // Validate password strength
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
+      return res.status(400).json({ 
+        error: 'Weak password', 
+        details: passwordValidation.errors 
+      });
+    }
+
+    // Validate names if provided
+    if (firstName) {
+      const firstNameValidation = validateName(firstName, 'First name');
+      if (!firstNameValidation.isValid) {
+        return res.status(400).json({ 
+          error: 'Invalid first name', 
+          details: firstNameValidation.errors 
+        });
+      }
+    }
+
+    if (lastName) {
+      const lastNameValidation = validateName(lastName, 'Last name');
+      if (!lastNameValidation.isValid) {
+        return res.status(400).json({ 
+          error: 'Invalid last name', 
+          details: lastNameValidation.errors 
+        });
+      }
+    }
+
+    // Normalize email
+    const normalizedEmail = email.toLowerCase().trim();
 
     // Check if user exists
     const existingUser = await prisma.user.findUnique({
-      where: { email }
+      where: { email: normalizedEmail }
     });
 
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // Hash password with stronger rounds
+    const securityConfig = getSecurityConfig();
+    const hashedPassword = await bcrypt.hash(password, securityConfig.bcryptRounds);
+    console.log('[Security] Password hashed with', securityConfig.bcryptRounds, 'rounds');
 
-    // Create user
+    // Create user with sanitized data
     const user = await prisma.user.create({
       data: {
-        email,
+        email: normalizedEmail,
         passwordHash: hashedPassword,
-        firstName: firstName || null,
-        lastName: lastName || null
+        firstName: firstName ? sanitizeString(firstName) : null,
+        lastName: lastName ? sanitizeString(lastName) : null
       }
     });
 
-    // Generate JWT
-    const token = jwt.sign(
+    // Generate JWT with proper claims
+    const token = (jwt.sign as any)(
       { 
+        sub: user.id,
         userId: user.id, 
-        email: user.email 
+        email: user.email
       },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
+      securityConfig.jwtSecret,
+      { 
+        expiresIn: securityConfig.jwtExpiresIn,
+        algorithm: securityConfig.jwtAlgorithm
+      }
+    ) as string;
 
-    console.log('User registered successfully:', { userId: user.id, email: user.email });
+    console.log('[Auth] User registered successfully:', { 
+      userId: user.id, 
+      email: user.email,
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    });
 
     res.json({
       user: {
@@ -188,33 +252,104 @@ router.post('/login', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
+    // Normalize email
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Get client IP and user agent for security monitoring
+    const clientIP = (req.headers['x-forwarded-for'] as string || req.ip || 'unknown').split(',')[0].trim();
+    const userAgent = req.headers['user-agent'] || 'unknown';
+
+    // Check IP-based rate limiting (security monitor)
+    if (securityMonitor.isIPRateLimited(clientIP)) {
+      console.warn('[Security] IP rate limited:', { ip: clientIP, email: normalizedEmail });
+      return res.status(429).json({ 
+        error: 'Too many login attempts from this IP address. Please try again later.'
+      });
+    }
+
+    // Check email-based rate limiting (legacy validation)
+    const rateLimit = checkLoginRateLimit(normalizedEmail);
+    if (!rateLimit.allowed) {
+      console.warn('[Security] Login rate limit exceeded:', { 
+        email: normalizedEmail, 
+        ip: clientIP 
+      });
+      return res.status(429).json({ 
+        error: rateLimit.message || 'Too many login attempts',
+        remainingTime: rateLimit.remainingTime
+      });
+    }
+
     // Find user
     const user = await prisma.user.findUnique({
-      where: { email }
+      where: { email: normalizedEmail }
     });
 
     if (!user || !user.passwordHash) {
+      recordFailedLogin(normalizedEmail);
+      // Record failed attempt in security monitor (with temporary user ID)
+      securityMonitor.recordAttempt(`unknown:${normalizedEmail}`, false, clientIP, userAgent);
+      console.warn('[Security] Login attempt for non-existent user:', { 
+        email: normalizedEmail, 
+        ip: clientIP 
+      });
+      // Use generic error message to prevent user enumeration
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Verify password
+    // Check if account is locked (security monitor)
+    if (securityMonitor.isAccountLocked(user.id)) {
+      console.warn('[Security] Login attempt for locked account:', { 
+        userId: user.id, 
+        email: normalizedEmail,
+        ip: clientIP 
+      });
+      return res.status(423).json({ 
+        error: 'Account temporarily locked due to multiple failed login attempts. Please try again later.'
+      });
+    }
+
+    // Verify password with timing-safe comparison
     const validPassword = await bcrypt.compare(password, user.passwordHash);
 
     if (!validPassword) {
+      recordFailedLogin(normalizedEmail);
+      // Record failed attempt in security monitor
+      securityMonitor.recordAttempt(user.id, false, clientIP, userAgent);
+      console.warn('[Security] Failed login attempt:', { 
+        email: normalizedEmail, 
+        ip: clientIP,
+        userId: user.id
+      });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Generate JWT
-    const token = jwt.sign(
-      { 
-        userId: user.id, 
-        email: user.email 
-      },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
+    // Reset failed login attempts on successful login
+    resetLoginAttempts(normalizedEmail);
+    // Record successful login in security monitor
+    securityMonitor.recordAttempt(user.id, true, clientIP, userAgent);
 
-    console.log('User logged in successfully:', { userId: user.id, email: user.email });
+    // Generate JWT with proper claims  
+    const securityConfig = getSecurityConfig();
+    const token = (jwt.sign as any)(
+      { 
+        sub: user.id,
+        userId: user.id, 
+        email: user.email
+      },
+      securityConfig.jwtSecret,
+      { 
+        expiresIn: securityConfig.jwtExpiresIn,
+        algorithm: securityConfig.jwtAlgorithm
+      }
+    ) as string;
+
+    console.log('[Auth] User logged in successfully:', { 
+      userId: user.id, 
+      email: user.email,
+      ip: clientIP,
+      userAgent: userAgent
+    });
 
     res.json({
       id: user.id,
@@ -241,10 +376,20 @@ router.get('/me', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Not authorized' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    // Check if token is blacklisted
+    if (tokenBlacklist.isBlacklisted(token)) {
+      return res.status(401).json({ error: 'Session has been revoked' });
+    }
+
+    const securityConfig = getSecurityConfig();
+    const decoded = jwt.verify(token, securityConfig.jwtSecret, {
+      algorithms: [securityConfig.jwtAlgorithm]
+    }) as { userId: string; sub: string };
+
+    const userId = decoded.sub || decoded.userId;
 
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: userId },
       select: {
         id: true,
         email: true,
@@ -278,10 +423,21 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Wallet address is required' });
     }
 
-    // Normalize wallet address (lowercase for consistency)
-    const normalizedAddress = walletAddress.toLowerCase();
+    // Validate wallet address format for Ethereum/EVM chains
+    if (chainId && chainId !== 'algorand') {
+      const walletValidation = validateWalletAddress(walletAddress);
+      if (!walletValidation.isValid) {
+        return res.status(400).json({ 
+          error: 'Invalid wallet address', 
+          details: walletValidation.errors 
+        });
+      }
+    }
 
-    console.log('🔐 Web3 wallet authentication:', {
+    // Normalize wallet address (lowercase for consistency)
+    const normalizedAddress = walletAddress.toLowerCase().trim();
+
+    console.log('[Auth] Web3 wallet authentication:', {
       walletAddress: normalizedAddress,
       chainId,
       domain
@@ -313,19 +469,27 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
     }
 
     // Generate JWT for wallet user
-    const token = jwt.sign(
+    const securityConfig = getSecurityConfig();
+    const token = (jwt.sign as any)(
       { 
+        sub: user.id,
         userId: user.id, 
         walletAddress: normalizedAddress,
         authType: 'web3'
       },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
+      securityConfig.jwtSecret,
+      { 
+        expiresIn: securityConfig.jwtExpiresIn,
+        algorithm: securityConfig.jwtAlgorithm
+      }
+    ) as string;
 
-    console.log('✅ Wallet user authenticated successfully:', {
+    console.log('[Auth] Wallet user authenticated successfully:', {
       userId: user.id,
-      walletAddress: normalizedAddress
+      walletAddress: normalizedAddress,
+      chainId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
     });
 
     res.json({
@@ -339,7 +503,7 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('❌ Wallet authentication failed:', error);
+    console.error('[Auth] Wallet authentication failed:', error);
     res.status(500).json({ 
       error: 'Wallet authentication failed',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
@@ -369,7 +533,10 @@ router.get('/session', async (req: Request, res: Response) => {
     // Note: In production, this should validate against NextAuth's secret
     // For now, we'll decode and validate the structure
     try {
-      const decoded = jwt.verify(sessionToken, process.env.NEXTAUTH_SECRET || JWT_SECRET) as any;
+      const securityConfig = getSecurityConfig();
+      const decoded = jwt.verify(sessionToken, securityConfig.nextAuthSecret, {
+        algorithms: [securityConfig.jwtAlgorithm]
+      }) as any;
       
       if (decoded && decoded.email) {
         // Find or create user in database
@@ -424,15 +591,96 @@ router.get('/session', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/auth/logout - Logout and blacklist token
+ */
+router.post('/logout', async (req: Request, res: Response) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '') || 
+                  req.cookies?.['next-auth.session-token'] ||
+                  req.cookies?.['__Secure-next-auth.session-token'];
+
+    if (!token) {
+      return res.status(400).json({ error: 'No token provided' });
+    }
+
+    // Decode token to get expiration and user ID
+    const securityConfig = getSecurityConfig();
+    try {
+      const decoded = jwt.verify(token, securityConfig.jwtSecret, {
+        algorithms: [securityConfig.jwtAlgorithm]
+      }) as any;
+
+      const userId = decoded.sub || decoded.userId;
+      const expiresAt = decoded.exp ? decoded.exp * 1000 : Date.now() + (30 * 24 * 60 * 60 * 1000);
+
+      // Add to blacklist
+      tokenBlacklist.add(token, expiresAt, userId, 'logout');
+
+      console.log('[Auth] User logged out successfully:', { userId });
+      return res.json({ success: true, message: 'Logged out successfully' });
+    } catch (err) {
+      // Token invalid or expired - still return success
+      console.log('[Auth] Logout with invalid token (already expired)');
+      return res.json({ success: true, message: 'Logged out successfully' });
+    }
+  } catch (error) {
+    console.error('[Auth] Logout failed:', error);
+    return res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+/**
+ * POST /api/auth/revoke-all-sessions - Revoke all sessions for security (requires auth)
+ */
+router.post('/revoke-all-sessions', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    const count = tokenBlacklist.revokeAllForUser(req.user.id, 'security');
+
+    res.json({ 
+      success: true, 
+      message: `Revoked ${count} sessions`,
+      revokedCount: count
+    });
+  } catch (error) {
+    console.error('[Auth] Failed to revoke sessions:', error);
+    res.status(500).json({ error: 'Failed to revoke sessions' });
+  }
+});
+
+/**
  * Health check for authentication system
  */
 router.get('/health', (req: Request, res: Response) => {
+  const securityConfig = getSecurityConfig();
   res.json({ 
     success: true, 
     message: 'Authentication system is healthy',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV
+    environment: process.env.NODE_ENV,
+    securityLevel: securityConfig.isProduction ? 'production' : 'development'
   });
+});
+
+/**
+ * GET /api/auth/security-stats - Get security monitoring statistics
+ * Requires authentication for security
+ */
+router.get('/security-stats', authenticateToken, (req: Request, res: Response) => {
+  try {
+    const stats = securityMonitor.getStats();
+    res.json({
+      success: true,
+      stats,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[Auth] Failed to get security stats:', error);
+    res.status(500).json({ error: 'Failed to retrieve security statistics' });
+  }
 });
 
 export default router;

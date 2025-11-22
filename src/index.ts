@@ -2,7 +2,7 @@ import express from "express";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import { logger } from "./middleware/logger.js";
-import { corsMiddleware, securityMiddleware } from "./middleware/security.js";
+import { corsMiddleware, helmetMiddleware, securityMiddleware } from "./middleware/security.js";
 import { 
   requestTimer, 
   responseOptimizer, 
@@ -53,20 +53,11 @@ app.use(memoryMonitor);
 app.use(compressionMiddleware);
 app.use(responseOptimizer);
 
-// Handle OPTIONS requests before CORS middleware
-app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    return res.sendStatus(200);
-  }
-  next();
-});
-
-// Apply CORS globally (before routes)
+// Apply CORS globally (handles OPTIONS automatically)
 app.use(corsMiddleware);
+
+// Apply security headers globally to all routes
+app.use(helmetMiddleware);
 
 // Trust proxy when behind Railway/Proxies
 app.set('trust proxy', 1);

@@ -662,7 +662,7 @@ router.get('/dashboard/overview', authenticateToken, async (req: Request, res: R
     const onTime = withDue.filter(t => t.updatedAt && t.dueDate && t.updatedAt <= t.dueDate);
     const timelineAdherence = withDue.length > 0 ? Math.round((onTime.length / withDue.length) * 100) : 0;
 
-    // Budget utilization: unknown without budget data → null
+    // Budget utilization: unknown without budget data -> null
     const budgetUtilization: number | null = null;
 
     return res.json({
@@ -750,7 +750,7 @@ router.get('/projects/performance', authenticateToken, async (req: Request, res:
     // Health score: blend of completion and on-time
     const healthScore = Math.round((completionRate * 0.6 + onTimeRate * 0.4));
 
-    // Budget vs actual: no budget fields yet → nulls
+    // Budget vs actual: no budget fields yet -> nulls
     const budgetVsActual = { budget: null as number | null, actual: null as number | null };
 
     // Risk assessment: simple heuristics
@@ -1156,7 +1156,7 @@ router.get('/live/dashboard', authenticateToken, async (req: Request, res: Respo
     const completed7 = await prisma.task.count({ where: { department: { projectId: { in: projectIds } }, status: { in: ['COMPLETED','APPROVED'] }, updatedAt: { gte: start } } });
     const productivity = [{ metric: 'throughput7d', value: completed7 }];
 
-    // teamOnline and systemHealth not tracked → placeholders
+    // teamOnline and systemHealth not tracked -> placeholders
     const teamOnline: any[] = [];
     const systemHealth = [{ service: 'db', status: 'unknown' }];
 
