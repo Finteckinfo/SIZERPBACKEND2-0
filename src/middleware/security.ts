@@ -21,10 +21,11 @@ const getAllowedOrigins = (): string[] => {
   return origins;
 };
 
-const allowedOrigins = getAllowedOrigins();
-
 export const corsMiddleware = cors({
   origin: function (origin, callback) {
+    // Get allowed origins dynamically (after dotenv loads)
+    const allowedOrigins = getAllowedOrigins();
+    
     // Allow requests with no origin only in development (like curl, Postman)
     if (!origin && process.env.NODE_ENV !== 'production') {
       return callback(null, true);
