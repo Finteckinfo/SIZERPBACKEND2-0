@@ -7,36 +7,34 @@ import cors from "cors";
 const getAllowedOrigins = (): string[] => {
   const envOrigins = process.env.CORS_ORIGINS || '';
   const origins = envOrigins.split(',').map(o => o.trim()).filter(Boolean);
-  
-  // Fallback to production origins if not specified
-  if (origins.length === 0) {
-    return [
-      "https://sizerp-2-0.vercel.app",
-      "https://siz.land",
-      "https://erp.siz.land",
-      "https://www.siz.land"
-    ];
-  }
-  
-  return origins;
+
+  const defaultOrigins = [
+    "https://sizerp-2-0.vercel.app",
+    "https://siz.land",
+    "https://erp.siz.land",
+    "https://www.siz.land"
+  ];
+
+  // Merge and deduplicate to ensure critical domains are always allowed
+  return Array.from(new Set([...origins, ...defaultOrigins]));
 };
 
 export const corsMiddleware = cors({
   origin: function (origin, callback) {
     // Get allowed origins dynamically (after dotenv loads)
     const allowedOrigins = getAllowedOrigins();
-    
+
     // Allow requests with no origin only in development (like curl, Postman)
     if (!origin && process.env.NODE_ENV !== 'production') {
       return callback(null, true);
     }
-    
+
     // In production, always require an origin
     if (!origin && process.env.NODE_ENV === 'production') {
       console.warn('[CORS] Blocked request with no origin in production');
       return callback(new Error("Not allowed by CORS"));
     }
-    
+
     if (allowedOrigins.includes(origin!)) {
       callback(null, true);
     } else {
@@ -79,7 +77,7 @@ export const helmetMiddleware = helmet({
 });
 
 // CSRF protection (only for /app routes, not API)
-export const csrfMiddleware = csrf({ 
+export const csrfMiddleware = csrf({
   cookie: {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
