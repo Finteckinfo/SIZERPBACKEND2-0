@@ -2,7 +2,7 @@
 
 This document summarizes all the comprehensive project management APIs that have been implemented for the frontend.
 
-## 🚀 **1. Project Management APIs**
+## **1. Project Management APIs**
 
 ### **GET /api/projects** - List all projects with filtering
 - **Purpose**: List all projects with advanced filtering, pagination, and search
@@ -50,7 +50,7 @@ This document summarizes all the comprehensive project management APIs that have
 
 ---
 
-## 🏢 **2. Project Departments APIs**
+## **2. Project Departments APIs**
 
 ### **GET /api/projects/:projectId/departments** - Get project departments
 - **Purpose**: Get all departments for a specific project
@@ -91,7 +91,7 @@ This document summarizes all the comprehensive project management APIs that have
 
 ---
 
-## 👥 **3. Project Team Management APIs**
+## **3. Project Team Management APIs**
 
 ### **GET /api/projects/:projectId/users** - Get project team members
 - **Purpose**: Get all team members for a project

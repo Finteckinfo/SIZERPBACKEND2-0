@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { authenticateToken } from "../middleware/auth.js";
+import { rateLimiter } from "../middleware/performance.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { 
@@ -134,7 +135,7 @@ router.get('/profile', authenticateToken, async (req: Request, res: Response) =>
  */
 
 // POST /api/auth/register - Register new user with password
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', rateLimiter(5, 60000), async (req: Request, res: Response) => {
   try {
     const { email, password, firstName, lastName } = req.body;
 
@@ -244,7 +245,7 @@ router.post('/register', async (req: Request, res: Response) => {
 });
 
 // POST /api/auth/login - Login with password
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
