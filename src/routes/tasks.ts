@@ -1,12 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
 import { checkProjectAccess } from '../utils/accessControl.js';
 import { broadcastTaskMoved, broadcastTaskAssigned, broadcastTaskCreated, broadcastTaskUpdated } from '../services/websocket.js';
 import { queuePayment } from '../services/paymentQueue.js';
+import prisma from '../utils/database.js';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Helper function to check authentication
 const requireAuth = (req: Request, res: Response): boolean => {
