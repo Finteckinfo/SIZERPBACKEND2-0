@@ -5,7 +5,7 @@ dotenv.config();
 
 export class EscrowService {
     private provider: ethers.JsonRpcProvider;
-    private signer: ethers.Wallet;
+    private signer?: ethers.Wallet;
     private escrowAddress: string;
     private escrowAbi: string[];
 

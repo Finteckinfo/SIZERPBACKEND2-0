@@ -139,6 +139,29 @@ export async function optInToSIZCOIN(escrowAddress: string, encryptedPrivateKey:
 }
 
 /**
+ * Gets the SIZCOIN balance of an escrow account from the blockchain
+ */
+export async function getEscrowBalance(escrowAddress: string): Promise<number> {
+  try {
+    const accountInfo = await algodClient.accountInformation(escrowAddress).do();
+    
+    // Find SIZCOIN asset in account's assets
+    const assets = accountInfo.assets || [];
+    const sizcoinAsset = assets.find((asset: any) => asset['asset-id'] === SIZCOIN_ASSET_ID);
+    
+    if (!sizcoinAsset) {
+      return 0; // Not opted-in or no balance
+    }
+    
+    // Convert micro units to SIZ (divide by 100)
+    return sizcoinAsset.amount / MICRO_UNITS_PER_SIZ;
+  } catch (error) {
+    console.error('Error fetching escrow balance:', error);
+    return 0;
+  }
+}
+
+/**
  * Gets the SIZCOIN balance of a user's wallet address from the blockchain
  */
 export async function getUserBalance(walletAddress: string): Promise<number> {
