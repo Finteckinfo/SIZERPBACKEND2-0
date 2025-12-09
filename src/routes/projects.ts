@@ -3,6 +3,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/database.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { checkProjectAccess } from '../utils/accessControl.js';
+import { getUserBalance } from '../services/algorand.js';
 
 const router = Router();
 
@@ -677,6 +678,30 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
     const authenticatedUserId = req.user?.id;
     if (!authenticatedUserId) {
       return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Check 20 SIZ token gate unless skipped for testing
+    const skipTokenGate = process.env.SKIP_TOKEN_GATE === 'true';
+    if (!skipTokenGate) {
+      // Get user with wallet address
+      const user = await prisma.user.findUnique({
+        where: { id: authenticatedUserId },
+        select: { walletAddress: true, email: true }
+      });
+
+      if (!user?.walletAddress) {
+        return res.status(400).json({ error: 'User must have a wallet address to create projects' });
+      }
+
+      // Check SIZ token balance
+      const balance = await getUserBalance(user.walletAddress);
+      if (balance < 20) {
+        return res.status(403).json({ 
+          error: 'Insufficient SIZ tokens. You need at least 20 SIZ tokens to create a project.',
+          currentBalance: balance,
+          requiredBalance: 20
+        });
+      }
     }
 
     // Verify wallet ownership if provided
