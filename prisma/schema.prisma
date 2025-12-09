@@ -388,7 +388,7 @@ model RecurringPayment {
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
-  
+
   @@index([projectId])
   @@index([userRoleId])
   @@index([nextPaymentDate])
@@ -399,4 +399,30 @@ model Config {
   id    String @id @default(cuid())
   key   String @unique
   value Json
+}
+
+model WalletAuthEvent {
+  id                  String   @id @default(cuid())
+  status              String
+  channel             String
+  surface             String?
+  chain               String?
+  method              String?
+  providerId          String?
+  stage               String?
+  walletAddressMasked String?
+  walletAddressHash   String?
+  isNewWallet         Boolean?
+  isRecovery          Boolean?
+  errorCode           String?
+  errorMessage        String?
+  extra               Json?
+  ipAddress           String?
+  userAgent           String?
+  createdAt           DateTime @default(now())
+
+  @@index([status])
+  @@index([channel])
+  @@index([createdAt])
+  @@index([walletAddressHash])
 }

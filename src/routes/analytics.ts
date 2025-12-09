@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.js';
 import { checkProjectAccess } from '../utils/accessControl.js';
+import crypto from 'crypto';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -1262,7 +1263,97 @@ router.post('/dashboards/share', authenticateToken, async (req: Request, res: Re
   }
 });
 
-// CONFIGURATION
+// ... (rest of the code remains the same)
+
+// ==========================
+// Wallet Auth Analytics
+// ==========================
+
+const hashWalletAddress = (address?: string | null) => {
+  if (!address) return null;
+  return crypto.createHash('sha256').update(address.toLowerCase().trim()).digest('hex');
+};
+
+router.post('/wallet-auth', async (req: Request, res: Response) => {
+  try {
+    const {
+      status,
+      channel,
+      surface,
+      chain,
+      method,
+      providerId,
+      stage,
+      walletAddressMasked,
+      walletAddress,
+      isNewWallet,
+      isRecovery,
+      errorCode,
+      errorMessage,
+      extra,
+    } = req.body || {};
+
+    if (!status || !channel) {
+      return res.status(400).json({ error: 'status and channel are required' });
+    }
+
+    await prisma.walletAuthEvent.create({
+      data: {
+        status,
+        channel,
+        surface,
+        chain,
+        method,
+        providerId,
+        stage,
+        walletAddressMasked,
+        walletAddressHash: hashWalletAddress(walletAddress),
+        isNewWallet,
+        isRecovery,
+        errorCode,
+        errorMessage,
+        extra,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'] || null,
+      },
+    });
+
+    return res.status(201).json({ ok: true });
+  } catch (error) {
+    console.error('Failed to store wallet auth event:', error);
+    return res.status(500).json({ error: 'Failed to store wallet auth event' });
+  }
+});
+
+router.get('/wallet-auth/summary', authenticateToken, async (_req: Request, res: Response) => {
+  try {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const summary = await prisma.walletAuthEvent.groupBy({
+      by: ['channel', 'status'],
+      where: { createdAt: { gte: since } },
+      _count: { _all: true },
+    });
+
+    const timeline = await prisma.walletAuthEvent.groupBy({
+      by: ['status'],
+      where: { createdAt: { gte: since } },
+      _count: { _all: true },
+    });
+
+    res.json({
+      since: since.toISOString(),
+      summary,
+      totals: timeline,
+    });
+  } catch (error) {
+    console.error('Failed to fetch wallet auth summary:', error);
+    res.status(500).json({ error: 'Failed to fetch wallet auth summary' });
+  }
+});
+
+// ... (rest of the code remains the same)
+
 router.get('/config/settings', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { userId, configType } = req.query as any;
@@ -1271,6 +1362,8 @@ router.get('/config/settings', authenticateToken, async (req: Request, res: Resp
     res.status(500).json({ error: 'Failed to fetch analytics config' });
   }
 });
+
+// ... (rest of the code remains the same)
 
 router.get('/widgets/config', authenticateToken, async (req: Request, res: Response) => {
   try {
