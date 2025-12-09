@@ -141,8 +141,8 @@ export function validateTokenAge(iat: number): boolean {
  * Validate JWT claims
  */
 export function validateJWTClaims(decoded: any): { valid: boolean; error?: string } {
-  // Check required claims
-  if (!decoded.sub && !decoded.id && !decoded.userId) {
+  // Check required claims - allow sub, id, userId, or email as identifier
+  if (!decoded.sub && !decoded.id && !decoded.userId && !decoded.email) {
     return { valid: false, error: 'Missing user identifier in token' };
   }
 

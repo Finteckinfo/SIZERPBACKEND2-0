@@ -88,10 +88,14 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			return res.status(401).json({ error: 'Invalid session token: ' + claimValidation.error });
 		}
 
-		// 5) Extract user info from token
+		// 5) Extract user info from token (support wallet-only tokens with email as identifier)
 		const email = decoded.email;
-		const sub = decoded.sub || decoded.id;
+		const sub = decoded.sub || decoded.id || decoded.userId || email;
 		const name = decoded.name;
+
+		if (!sub) {
+			return res.status(401).json({ error: 'Session token missing user identifier' });
+		}
 
 		if (!email) {
 			return res.status(401).json({ error: 'Session token missing email' });
