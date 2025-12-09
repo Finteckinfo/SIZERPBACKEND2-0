@@ -5,6 +5,8 @@
  * For production with multiple servers, migrate to Redis
  */
 
+import crypto from 'crypto';
+
 interface BlacklistEntry {
   token: string;
   expiresAt: number;
@@ -133,7 +135,6 @@ class TokenBlacklist {
    */
   private hashToken(token: string): string {
     // Use Node.js crypto for production
-    const crypto = require('crypto');
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
