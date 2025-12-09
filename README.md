@@ -48,6 +48,7 @@ SIZER Backend provides a complete project management solution with role-based ac
 - Redis-based session storage
 - Helmet.js security headers
 - CSRF protection
+- **20 SIZ Token Gate**: Configurable requirement for users to hold minimum SIZ tokens to create projects
 - Input validation and sanitization
 
 ### Analytics & Monitoring
@@ -127,6 +128,9 @@ ALGORAND_NETWORK="testnet"
 
 # Encryption for Escrow Private Keys
 ENCRYPTION_SECRET="your_32_character_encryption_key"
+
+# Token Gate Configuration
+SKIP_TOKEN_GATE=true  # Set to 'false' to enforce 20 SIZ token requirement
 
 # Payment Processing
 PAYMENT_CONFIRMATION_THRESHOLD=3
