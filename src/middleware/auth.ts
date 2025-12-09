@@ -26,10 +26,19 @@ declare global {
  */
 export const authenticateToken = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		// 1) Get NextAuth session token from cookies
-		const token =
-			req.cookies?.['next-auth.session-token'] ||
-			req.cookies?.['__Secure-next-auth.session-token'];
+		// 1) Get NextAuth session token from Authorization header (preferred) or cookies
+		const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+		let token: string | undefined;
+
+		if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+			token = authHeader.slice(7).trim();
+		}
+
+		if (!token) {
+			token =
+				req.cookies?.['next-auth.session-token'] ||
+				req.cookies?.['__Secure-next-auth.session-token'];
+		}
 
 		if (!token) {
 			return res.status(401).json({ error: 'No session token provided' });
