@@ -34,6 +34,7 @@ import transactionsRouter from './routes/transactions.js';
 import paymentConfigRouter from './routes/payment-config.js';
 import recurringPaymentsRouter from './routes/recurring-payments.js';
 import escrowEnhancedRouter from './routes/escrow-enhanced.js';
+import { setupCspReportRoutes } from './routes/csp-report.js';
 import { getRedisClient } from './services/redis.js';
 
 dotenv.config();
@@ -58,6 +59,9 @@ app.use(helmetMiddleware);
 
 // Trust proxy when behind Railway/Proxies
 app.set('trust proxy', 1);
+
+// Setup CSP report routes
+setupCspReportRoutes(app);
 
 // Authentication routes (after middleware setup)
 app.use('/api/auth', authRouter);

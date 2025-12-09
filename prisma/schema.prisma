@@ -426,3 +426,25 @@ model WalletAuthEvent {
   @@index([createdAt])
   @@index([walletAddressHash])
 }
+
+model CspViolation {
+  id                  String   @id @default(cuid())
+  documentUri         String
+  referrer            String   @default("")
+  violatedDirective   String
+  effectiveDirective  String
+  originalPolicy      String
+  sourceFile          String   @default("")
+  lineNumber          Int      @default(0)
+  columnNumber        Int      @default(0)
+  blockedUri          String   @default("")
+  statusCode          Int      @default(0)
+  userAgent           String   @default("")
+  ip                  String   @default("")
+  report              String   // JSON string of the full report
+  createdAt           DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([documentUri])
+  @@index([violatedDirective])
+}
