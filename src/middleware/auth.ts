@@ -61,24 +61,34 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 		const securityConfig = getSecurityConfig();
 		let decoded: any;
 		try {
+			// TRY 1: Verify with NextAuth secret (standard frontend tokens)
 			decoded = jwt.verify(token, securityConfig.nextAuthSecret, {
 				algorithms: [securityConfig.jwtAlgorithm], // Prevent algorithm confusion attacks
 				maxAge: securityConfig.maxTokenAge + 's'
 			});
 		} catch (err) {
-			console.error('[Auth] JWT verification failed:', err);
-			// Record failed attempt (use email from token payload if available)
-			const userAgent = req.headers['user-agent'] || 'unknown';
-			const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
-			if ((err as any).message?.includes('jwt')) {
-				try {
-					const partial = jwt.decode(token) as any;
-					if (partial?.email) {
-						securityMonitor.recordAttempt(partial.email, false, clientIP, userAgent);
-					}
-				} catch {}
+			// TRY 2: Verify with Backend JWT secret (backend-issued tokens)
+			try {
+				decoded = jwt.verify(token, securityConfig.jwtSecret, {
+					algorithms: [securityConfig.jwtAlgorithm],
+					maxAge: securityConfig.maxTokenAge + 's'
+				});
+				// console.log('[Auth] Validated token using Backend JWT secret');
+			} catch (fallbackErr) {
+				console.error('[Auth] JWT verification failed (both secrets):', err);
+				// Record failed attempt (use email from token payload if available)
+				const userAgent = req.headers['user-agent'] || 'unknown';
+				const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
+				if ((err as any).message?.includes('jwt')) {
+					try {
+						const partial = jwt.decode(token) as any;
+						if (partial?.email) {
+							securityMonitor.recordAttempt(partial.email, false, clientIP, userAgent);
+						}
+					} catch { }
+				}
+				return res.status(401).json({ error: 'Invalid or expired session token' });
 			}
-			return res.status(401).json({ error: 'Invalid or expired session token' });
 		}
 
 		// 4) Validate JWT claims
