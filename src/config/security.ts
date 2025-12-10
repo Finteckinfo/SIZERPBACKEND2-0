@@ -73,7 +73,8 @@ export function loadSecurityConfig(): SecurityConfig {
     // Development mode - allow fallbacks but warn
     if (!jwtSecret) {
       console.warn('[SECURITY WARNING] JWT_SECRET not set. Using development fallback. DO NOT USE IN PRODUCTION.');
-      jwtSecret = 'dev-jwt-secret-NOT-FOR-PRODUCTION-' + Math.random().toString(36);
+      // Use consistent secret to survive restarts
+      jwtSecret = 'dev-jwt-secret-fallback-constant-value-2025';
     }
     if (!nextAuthSecret) {
       console.warn('[SECURITY WARNING] NEXTAUTH_SECRET not set. Using development fallback. DO NOT USE IN PRODUCTION.');
@@ -123,17 +124,17 @@ export function validateTokenAge(iat: number): boolean {
   const config = getSecurityConfig();
   const now = Math.floor(Date.now() / 1000);
   const tokenAge = now - iat;
-  
+
   if (tokenAge > config.maxTokenAge) {
     return false;
   }
-  
+
   if (tokenAge < 0) {
     // Token issued in the future - clock skew or manipulation
     console.warn('[Security] Token issued in the future. Possible clock skew or manipulation.');
     return Math.abs(tokenAge) < 300; // Allow 5 minutes clock skew
   }
-  
+
   return true;
 }
 

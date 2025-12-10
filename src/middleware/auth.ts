@@ -76,6 +76,9 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 				// console.log('[Auth] Validated token using Backend JWT secret');
 			} catch (fallbackErr) {
 				console.error('[Auth] JWT verification failed (both secrets):', err);
+				// DEBUG: Enhanced error details
+				const detailMsg = fallbackErr instanceof Error ? fallbackErr.message : 'Unknown error';
+
 				// Record failed attempt (use email from token payload if available)
 				const userAgent = req.headers['user-agent'] || 'unknown';
 				const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
@@ -87,7 +90,11 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 						}
 					} catch { }
 				}
-				return res.status(401).json({ error: 'Invalid or expired session token' });
+				return res.status(401).json({
+					error: 'Invalid or expired session token',
+					details: detailMsg, // Return exact verification error
+					debug_env: process.env.NODE_ENV || 'unknown'
+				});
 			}
 		}
 
