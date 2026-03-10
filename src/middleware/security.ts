@@ -12,7 +12,8 @@ const getAllowedOrigins = (): string[] => {
     "https://sizerp-2-0.vercel.app",
     "https://siz.land",
     "https://erp.siz.land",
-    "https://www.siz.land"
+    "https://www.siz.land",
+    "https://solutions.siz.land"
   ];
 
   // Merge and deduplicate to ensure critical domains are always allowed
