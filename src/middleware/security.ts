@@ -13,7 +13,8 @@ const getAllowedOrigins = (): string[] => {
     "https://siz.land",
     "https://erp.siz.land",
     "https://www.siz.land",
-    "https://solutions.siz.land"
+    "https://solutions.siz.land",
+    "https://buy.siz.land"
   ];
 
   // Merge and deduplicate to ensure critical domains are always allowed
