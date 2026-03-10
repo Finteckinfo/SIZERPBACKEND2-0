@@ -3,9 +3,9 @@ import { authenticateToken } from "../middleware/auth.js";
 import { rateLimiter } from "../middleware/performance.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { 
-  validateEmail, 
-  validatePassword, 
+import {
+  validateEmail,
+  validatePassword,
   validateName,
   validateWalletAddress,
   sanitizeString,
@@ -17,10 +17,10 @@ import { prisma } from "../utils/prisma.js";
 import { getSecurityConfig } from "../config/security.js";
 import { tokenBlacklist } from "../utils/tokenBlacklist.js";
 import { securityMonitor } from "../utils/securityMonitor.js";
-import { 
-  sanitizeEmail, 
-  detectSQLInjection, 
-  detectXSS 
+import {
+  sanitizeEmail,
+  detectSQLInjection,
+  detectXSS
 } from "../utils/inputSanitizer.js";
 
 const router = Router();
@@ -34,13 +34,13 @@ router.post('/sync-user', authenticateToken, async (req: Request, res: Response)
   try {
     // User data is already verified and available from authenticateToken middleware
     const { user } = req;
-    
+
     if (!user) {
       return res.status(401).json({ error: 'User not authenticated' });
     }
 
-    console.log('[Auth] Syncing user session:', { 
-      userId: user.id, 
+    console.log('[Auth] Syncing user session:', {
+      userId: user.id,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName
@@ -63,13 +63,13 @@ router.post('/sync-user', authenticateToken, async (req: Request, res: Response)
       }
     });
 
-    console.log('[Auth] User session synced successfully:', { 
-      userId: syncedUser.id, 
-      email: syncedUser.email 
+    console.log('[Auth] User session synced successfully:', {
+      userId: syncedUser.id,
+      email: syncedUser.email
     });
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       user: {
         id: syncedUser.id,
         email: syncedUser.email,
@@ -80,7 +80,7 @@ router.post('/sync-user', authenticateToken, async (req: Request, res: Response)
 
   } catch (error) {
     console.error('[Auth] User session sync failed:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to sync user session',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
     });
@@ -93,7 +93,7 @@ router.post('/sync-user', authenticateToken, async (req: Request, res: Response)
 router.get('/profile', authenticateToken, async (req: Request, res: Response) => {
   try {
     const { user } = req;
-    
+
     if (!user) {
       return res.status(401).json({ error: 'User not authenticated' });
     }
@@ -115,14 +115,14 @@ router.get('/profile', authenticateToken, async (req: Request, res: Response) =>
       return res.status(404).json({ error: 'User not found in database' });
     }
 
-    res.json({ 
-      success: true, 
-      user: dbUser 
+    res.json({
+      success: true,
+      user: dbUser
     });
 
   } catch (error) {
     console.error('[Auth] Get profile failed:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to get user profile',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
     });
@@ -142,18 +142,18 @@ router.post('/register', rateLimiter(5, 60000), async (req: Request, res: Respon
     // Validate email
     const emailValidation = validateEmail(email);
     if (!emailValidation.isValid) {
-      return res.status(400).json({ 
-        error: 'Invalid email', 
-        details: emailValidation.errors 
+      return res.status(400).json({
+        error: 'Invalid email',
+        details: emailValidation.errors
       });
     }
 
     // Validate password strength
     const passwordValidation = validatePassword(password);
     if (!passwordValidation.isValid) {
-      return res.status(400).json({ 
-        error: 'Weak password', 
-        details: passwordValidation.errors 
+      return res.status(400).json({
+        error: 'Weak password',
+        details: passwordValidation.errors
       });
     }
 
@@ -161,9 +161,9 @@ router.post('/register', rateLimiter(5, 60000), async (req: Request, res: Respon
     if (firstName) {
       const firstNameValidation = validateName(firstName, 'First name');
       if (!firstNameValidation.isValid) {
-        return res.status(400).json({ 
-          error: 'Invalid first name', 
-          details: firstNameValidation.errors 
+        return res.status(400).json({
+          error: 'Invalid first name',
+          details: firstNameValidation.errors
         });
       }
     }
@@ -171,9 +171,9 @@ router.post('/register', rateLimiter(5, 60000), async (req: Request, res: Respon
     if (lastName) {
       const lastNameValidation = validateName(lastName, 'Last name');
       if (!lastNameValidation.isValid) {
-        return res.status(400).json({ 
-          error: 'Invalid last name', 
-          details: lastNameValidation.errors 
+        return res.status(400).json({
+          error: 'Invalid last name',
+          details: lastNameValidation.errors
         });
       }
     }
@@ -207,20 +207,20 @@ router.post('/register', rateLimiter(5, 60000), async (req: Request, res: Respon
 
     // Generate JWT with proper claims
     const token = (jwt.sign as any)(
-      { 
+      {
         sub: user.id,
-        userId: user.id, 
+        userId: user.id,
         email: user.email
       },
       securityConfig.jwtSecret,
-      { 
+      {
         expiresIn: securityConfig.jwtExpiresIn,
         algorithm: securityConfig.jwtAlgorithm
       }
     ) as string;
 
-    console.log('[Auth] User registered successfully:', { 
-      userId: user.id, 
+    console.log('[Auth] User registered successfully:', {
+      userId: user.id,
       email: user.email,
       ip: req.ip,
       userAgent: req.headers['user-agent']
@@ -237,7 +237,7 @@ router.post('/register', rateLimiter(5, 60000), async (req: Request, res: Respon
     });
   } catch (error) {
     console.error('Registration failed:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Registration failed',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
     });
@@ -263,7 +263,7 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
     // Check IP-based rate limiting (security monitor)
     if (securityMonitor.isIPRateLimited(clientIP)) {
       console.warn('[Security] IP rate limited:', { ip: clientIP, email: normalizedEmail });
-      return res.status(429).json({ 
+      return res.status(429).json({
         error: 'Too many login attempts from this IP address. Please try again later.'
       });
     }
@@ -271,11 +271,11 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
     // Check email-based rate limiting (legacy validation)
     const rateLimit = checkLoginRateLimit(normalizedEmail);
     if (!rateLimit.allowed) {
-      console.warn('[Security] Login rate limit exceeded:', { 
-        email: normalizedEmail, 
-        ip: clientIP 
+      console.warn('[Security] Login rate limit exceeded:', {
+        email: normalizedEmail,
+        ip: clientIP
       });
-      return res.status(429).json({ 
+      return res.status(429).json({
         error: rateLimit.message || 'Too many login attempts',
         remainingTime: rateLimit.remainingTime
       });
@@ -290,9 +290,9 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
       recordFailedLogin(normalizedEmail);
       // Record failed attempt in security monitor (with temporary user ID)
       securityMonitor.recordAttempt(`unknown:${normalizedEmail}`, false, clientIP, userAgent);
-      console.warn('[Security] Login attempt for non-existent user:', { 
-        email: normalizedEmail, 
-        ip: clientIP 
+      console.warn('[Security] Login attempt for non-existent user:', {
+        email: normalizedEmail,
+        ip: clientIP
       });
       // Use generic error message to prevent user enumeration
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -300,12 +300,12 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
 
     // Check if account is locked (security monitor)
     if (securityMonitor.isAccountLocked(user.id)) {
-      console.warn('[Security] Login attempt for locked account:', { 
-        userId: user.id, 
+      console.warn('[Security] Login attempt for locked account:', {
+        userId: user.id,
         email: normalizedEmail,
-        ip: clientIP 
+        ip: clientIP
       });
-      return res.status(423).json({ 
+      return res.status(423).json({
         error: 'Account temporarily locked due to multiple failed login attempts. Please try again later.'
       });
     }
@@ -317,8 +317,8 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
       recordFailedLogin(normalizedEmail);
       // Record failed attempt in security monitor
       securityMonitor.recordAttempt(user.id, false, clientIP, userAgent);
-      console.warn('[Security] Failed login attempt:', { 
-        email: normalizedEmail, 
+      console.warn('[Security] Failed login attempt:', {
+        email: normalizedEmail,
         ip: clientIP,
         userId: user.id
       });
@@ -333,20 +333,20 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
     // Generate JWT with proper claims  
     const securityConfig = getSecurityConfig();
     const token = (jwt.sign as any)(
-      { 
+      {
         sub: user.id,
-        userId: user.id, 
+        userId: user.id,
         email: user.email
       },
       securityConfig.jwtSecret,
-      { 
+      {
         expiresIn: securityConfig.jwtExpiresIn,
         algorithm: securityConfig.jwtAlgorithm
       }
     ) as string;
 
-    console.log('[Auth] User logged in successfully:', { 
-      userId: user.id, 
+    console.log('[Auth] User logged in successfully:', {
+      userId: user.id,
       email: user.email,
       ip: clientIP,
       userAgent: userAgent
@@ -361,7 +361,7 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
     });
   } catch (error) {
     console.error('Login failed:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Login failed',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
     });
@@ -428,9 +428,9 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
     if (chainId && chainId !== 'algorand') {
       const walletValidation = validateWalletAddress(walletAddress);
       if (!walletValidation.isValid) {
-        return res.status(400).json({ 
-          error: 'Invalid wallet address', 
-          details: walletValidation.errors 
+        return res.status(400).json({
+          error: 'Invalid wallet address',
+          details: walletValidation.errors
         });
       }
     }
@@ -472,14 +472,15 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
     // Generate JWT for wallet user
     const securityConfig = getSecurityConfig();
     const token = (jwt.sign as any)(
-      { 
+      {
         sub: user.id,
-        userId: user.id, 
+        userId: user.id,
+        email: user.email, // Required by validateJWTClaims and authenticateToken
         walletAddress: normalizedAddress,
         authType: 'web3'
       },
       securityConfig.jwtSecret,
-      { 
+      {
         expiresIn: securityConfig.jwtExpiresIn,
         algorithm: securityConfig.jwtAlgorithm
       }
@@ -505,7 +506,7 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
 
   } catch (error) {
     console.error('[Auth] Wallet authentication failed:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Wallet authentication failed',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
     });
@@ -520,13 +521,13 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
 router.get('/session', async (req: Request, res: Response) => {
   try {
     // Check for NextAuth session token in cookies
-    const sessionToken = req.cookies?.['next-auth.session-token'] || 
-                        req.cookies?.['__Secure-next-auth.session-token'];
+    const sessionToken = req.cookies?.['next-auth.session-token'] ||
+      req.cookies?.['__Secure-next-auth.session-token'];
 
     if (!sessionToken) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         user: null,
-        message: 'No session token found' 
+        message: 'No session token found'
       });
     }
 
@@ -538,7 +539,7 @@ router.get('/session', async (req: Request, res: Response) => {
       const decoded = jwt.verify(sessionToken, securityConfig.nextAuthSecret, {
         algorithms: [securityConfig.jwtAlgorithm]
       }) as any;
-      
+
       if (decoded && decoded.email) {
         // Find or create user in database
         let user = await prisma.user.findUnique({
@@ -570,20 +571,20 @@ router.get('/session', async (req: Request, res: Response) => {
       }
     } catch (jwtError) {
       console.error('JWT verification failed:', jwtError);
-      return res.status(401).json({ 
+      return res.status(401).json({
         user: null,
-        message: 'Invalid session token' 
+        message: 'Invalid session token'
       });
     }
 
-    return res.status(401).json({ 
+    return res.status(401).json({
       user: null,
-      message: 'Session validation failed' 
+      message: 'Session validation failed'
     });
 
   } catch (error) {
     console.error('Session validation error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       user: null,
       error: 'Session validation failed',
       details: process.env.NODE_ENV === 'development' ? (error as Error).message : 'Internal server error'
@@ -596,9 +597,9 @@ router.get('/session', async (req: Request, res: Response) => {
  */
 router.post('/logout', async (req: Request, res: Response) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '') || 
-                  req.cookies?.['next-auth.session-token'] ||
-                  req.cookies?.['__Secure-next-auth.session-token'];
+    const token = req.headers.authorization?.replace('Bearer ', '') ||
+      req.cookies?.['next-auth.session-token'] ||
+      req.cookies?.['__Secure-next-auth.session-token'];
 
     if (!token) {
       return res.status(400).json({ error: 'No token provided' });
@@ -641,8 +642,8 @@ router.post('/revoke-all-sessions', authenticateToken, async (req: Request, res:
 
     const count = tokenBlacklist.revokeAllForUser(req.user.id, 'security');
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: `Revoked ${count} sessions`,
       revokedCount: count
     });
@@ -657,8 +658,8 @@ router.post('/revoke-all-sessions', authenticateToken, async (req: Request, res:
  */
 router.get('/health', (req: Request, res: Response) => {
   const securityConfig = getSecurityConfig();
-  res.json({ 
-    success: true, 
+  res.json({
+    success: true,
     message: 'Authentication system is healthy',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV,

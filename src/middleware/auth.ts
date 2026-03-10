@@ -26,10 +26,19 @@ declare global {
  */
 export const authenticateToken = async (req: Request, res: Response, next: NextFunction) => {
 	try {
-		// 1) Get NextAuth session token from cookies
-		const token =
-			req.cookies?.['next-auth.session-token'] ||
-			req.cookies?.['__Secure-next-auth.session-token'];
+		// 1) Get NextAuth session token from Authorization header (preferred) or cookies
+		const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+		let token: string | undefined;
+
+		if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+			token = authHeader.slice(7).trim();
+		}
+
+		if (!token) {
+			token =
+				req.cookies?.['next-auth.session-token'] ||
+				req.cookies?.['__Secure-next-auth.session-token'];
+		}
 
 		if (!token) {
 			return res.status(401).json({ error: 'No session token provided' });
@@ -52,24 +61,41 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 		const securityConfig = getSecurityConfig();
 		let decoded: any;
 		try {
+			// TRY 1: Verify with NextAuth secret (standard frontend tokens)
 			decoded = jwt.verify(token, securityConfig.nextAuthSecret, {
 				algorithms: [securityConfig.jwtAlgorithm], // Prevent algorithm confusion attacks
 				maxAge: securityConfig.maxTokenAge + 's'
 			});
 		} catch (err) {
-			console.error('[Auth] JWT verification failed:', err);
-			// Record failed attempt (use email from token payload if available)
-			const userAgent = req.headers['user-agent'] || 'unknown';
-			const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
-			if ((err as any).message?.includes('jwt')) {
-				try {
-					const partial = jwt.decode(token) as any;
-					if (partial?.email) {
-						securityMonitor.recordAttempt(partial.email, false, clientIP, userAgent);
-					}
-				} catch {}
+			// TRY 2: Verify with Backend JWT secret (backend-issued tokens)
+			try {
+				decoded = jwt.verify(token, securityConfig.jwtSecret, {
+					algorithms: [securityConfig.jwtAlgorithm],
+					maxAge: securityConfig.maxTokenAge + 's'
+				});
+				// console.log('[Auth] Validated token using Backend JWT secret');
+			} catch (fallbackErr) {
+				console.error('[Auth] JWT verification failed (both secrets):', err);
+				// DEBUG: Enhanced error details
+				const detailMsg = fallbackErr instanceof Error ? fallbackErr.message : 'Unknown error';
+
+				// Record failed attempt (use email from token payload if available)
+				const userAgent = req.headers['user-agent'] || 'unknown';
+				const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
+				if ((err as any).message?.includes('jwt')) {
+					try {
+						const partial = jwt.decode(token) as any;
+						if (partial?.email) {
+							securityMonitor.recordAttempt(partial.email, false, clientIP, userAgent);
+						}
+					} catch { }
+				}
+				return res.status(401).json({
+					error: 'Invalid or expired session token',
+					details: detailMsg, // Return exact verification error
+					debug_env: process.env.NODE_ENV || 'unknown'
+				});
 			}
-			return res.status(401).json({ error: 'Invalid or expired session token' });
 		}
 
 		// 4) Validate JWT claims
@@ -79,10 +105,14 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			return res.status(401).json({ error: 'Invalid session token: ' + claimValidation.error });
 		}
 
-		// 5) Extract user info from token
+		// 5) Extract user info from token (support wallet-only tokens with email as identifier)
 		const email = decoded.email;
-		const sub = decoded.sub || decoded.id;
+		const sub = decoded.sub || decoded.id || decoded.userId || email;
 		const name = decoded.name;
+
+		if (!sub) {
+			return res.status(401).json({ error: 'Session token missing user identifier' });
+		}
 
 		if (!email) {
 			return res.status(401).json({ error: 'Session token missing email' });

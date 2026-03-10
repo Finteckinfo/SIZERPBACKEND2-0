@@ -1,4 +1,3 @@
-// src/routes/projects.ts
 import { Router, Request, Response } from 'express';
 import { prisma } from '../utils/database.js';
 import { authenticateToken } from '../middleware/auth.js';
@@ -6,6 +5,19 @@ import { checkProjectAccess } from '../utils/accessControl.js';
 import { getUserBalance } from '../services/algorand.js';
 
 const router = Router();
+const MIN_REQUIRED_SIZ = 20;
+
+/**
+ * GET /api/projects/token-gate/status
+ * Returns whether token gating is currently enforced
+ */
+router.get('/token-gate/status', (req: Request, res: Response) => {
+  const skipTokenGate = process.env.SKIP_TOKEN_GATE === 'true';
+  res.json({
+    skipTokenGate,
+    minimumSizRequired: skipTokenGate ? 0 : MIN_REQUIRED_SIZ
+  });
+});
 
 /**
  * GET /api/projects
