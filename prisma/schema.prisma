@@ -82,6 +82,7 @@ model User {
   paymentsRecv  Payment[]       @relation("PaymentsReceived")
   invites       ProjectInvite[]
   taskActivities TaskActivity[]
+  landRequests  LandAcquisitionRequest[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 }
@@ -425,6 +426,95 @@ model WalletAuthEvent {
   @@index([channel])
   @@index([createdAt])
   @@index([walletAddressHash])
+}
+
+//
+// Land Acquisition Workflow
+//
+enum LandRequestStatus {
+  REQUEST_CREATED
+  PLOT_FOUND           // Property options uploaded by admin
+  PLOT_SELECTED
+  ESCROW_CREATED
+  ESCROW_FUNDED
+  DUE_DILIGENCE
+  EXECUTION
+  REGISTRY_TRANSFER
+  COMPLETED
+  CANCELLED
+}
+
+enum LandRequestStep {
+  LOGIN
+  CONNECT_WALLET
+  CREATE_REQUEST
+  CONFIRMATION
+}
+
+model LandAcquisitionRequest {
+  id                String            @id @default(cuid())
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String
+  walletAddress     String?           // Set when user connects wallet
+  budget            Float?            // e.g. 100000 - set at Create Request
+  sizeCurve         String?           // e.g. "1 Acre"
+  purpose           String?           // e.g. "Farming", "Speculation"
+  plotReference     String?           // Optional, e.g. "N/A"
+  currentStep       LandRequestStep   @default(LOGIN)
+  status            LandRequestStatus @default(REQUEST_CREATED)
+  selectedPlot      LandPlot?         @relation("SelectedPlot", fields: [selectedPlotId], references: [id])
+  selectedPlotId    String?
+  escrowId          String?           // External escrow identifier
+  escrowAmount      Float?
+  escrowFundedAt    DateTime?
+  plots             LandPlot[]        @relation("RequestPlots")  // Plots uploaded for this request
+  documents         LandAcquisitionDocument[]
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model LandPlot {
+  id          String                   @id @default(cuid())
+  request     LandAcquisitionRequest   @relation("RequestPlots", fields: [requestId], references: [id], onDelete: Cascade)
+  requestId   String
+  name        String
+  fullAddress String
+  description String?
+  escrowAmount Float?                  // e.g. 5000
+  images      LandPlotImage[]
+  selectedBy  LandAcquisitionRequest[] @relation("SelectedPlot")
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@index([requestId])
+}
+
+model LandPlotImage {
+  id     String   @id @default(cuid())
+  plot   LandPlot @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  plotId String
+  url    String
+  order  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([plotId])
+}
+
+model LandAcquisitionDocument {
+  id        String                 @id @default(cuid())
+  request   LandAcquisitionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId String
+  type      String                 // REPORT, AGREEMENT, REGISTRY_CONFIRMATION, etc.
+  fileHash  String?
+  fileUrl   String
+  uploadedBy String?               // Admin userId
+  createdAt DateTime              @default(now())
+
+  @@index([requestId])
 }
 
 model CspViolation {

@@ -34,6 +34,7 @@ import transactionsRouter from './routes/transactions.js';
 import paymentConfigRouter from './routes/payment-config.js';
 import recurringPaymentsRouter from './routes/recurring-payments.js';
 import escrowEnhancedRouter from './routes/escrow-enhanced.js';
+import landAcquisitionRouter from './routes/land-acquisition.js';
 import { setupCspReportRoutes } from './routes/csp-report.js';
 import { getRedisClient } from './services/redis.js';
 
@@ -112,6 +113,7 @@ app.use('/api', transactionsRouter);
 app.use('/api', paymentConfigRouter);
 app.use('/api', recurringPaymentsRouter);
 app.use('/api', escrowEnhancedRouter);
+app.use('/api/land-acquisition', landAcquisitionRouter);
 
 // Dashboard routes with rate limiting and query optimization
 app.use('/api/dashboard', rateLimiter(200, 60000), queryOptimizer, dashboardRouter);
