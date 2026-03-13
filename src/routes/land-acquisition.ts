@@ -11,11 +11,15 @@ router.use(authenticateToken);
 /**
  * GET /api/land-acquisition/progress
  * Get current user's land acquisition progress (latest request)
+ * Query params: search (filter by location/name), maxEscrow (filter by escrowAmount <= value)
  */
 router.get('/progress', async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const search = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+    const maxEscrow = typeof req.query.maxEscrow === 'string' ? parseFloat(req.query.maxEscrow) : NaN;
 
     const request = await prisma.landAcquisitionRequest.findFirst({
       where: { userId },
@@ -28,6 +32,20 @@ router.get('/progress', async (req: Request, res: Response) => {
 
     if (!request) {
       return res.json({ request: null, currentStep: 'LOGIN' });
+    }
+
+    // Filter plots in DB layer: by search (name/fullAddress) and maxEscrow
+    let plots = request.plots;
+    if (search) {
+      plots = plots.filter(
+        (p) =>
+          p.name.toLowerCase().includes(search) ||
+          (p.fullAddress || '').toLowerCase().includes(search) ||
+          (p.description || '').toLowerCase().includes(search)
+      );
+    }
+    if (!isNaN(maxEscrow) && maxEscrow >= 0) {
+      plots = plots.filter((p) => p.escrowAmount == null || p.escrowAmount <= maxEscrow);
     }
 
     return res.json({
@@ -45,7 +63,7 @@ router.get('/progress', async (req: Request, res: Response) => {
         escrowAmount: request.escrowAmount,
         escrowFundedAt: request.escrowFundedAt,
         selectedPlot: request.selectedPlot,
-        plots: request.plots,
+        plots,
         createdAt: request.createdAt,
       },
       currentStep: request.currentStep,
@@ -201,6 +219,42 @@ router.post('/create-request', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[LandAcquisition] POST create-request error:', err);
     return res.status(500).json({ error: 'Failed to create request' });
+  }
+});
+
+/**
+ * PATCH /api/land-acquisition/update-criteria
+ * Update request criteria (budget, sizeCurve, purpose, plotReference) - for filtering lands
+ */
+router.patch('/update-criteria', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { budget, sizeCurve, purpose, plotReference } = req.body;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const request = await prisma.landAcquisitionRequest.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!request) return res.status(404).json({ error: 'No land request found' });
+
+    const data: Record<string, unknown> = {};
+    if (budget != null) {
+      const n = typeof budget === 'string' ? parseFloat(budget) : Number(budget);
+      if (!isNaN(n) && n >= 0) data.budget = n;
+    }
+    if (sizeCurve != null && String(sizeCurve).trim()) data.sizeCurve = String(sizeCurve).trim();
+    if (purpose != null && String(purpose).trim()) data.purpose = String(purpose).trim();
+    if (plotReference != null) data.plotReference = String(plotReference).trim() || null;
+
+    const updated = await prisma.landAcquisitionRequest.update({
+      where: { id: request.id },
+      data,
+    });
+    return res.json({ success: true, request: updated });
+  } catch (err) {
+    console.error('[LandAcquisition] PATCH update-criteria error:', err);
+    return res.status(500).json({ error: 'Failed to update criteria' });
   }
 });
 
