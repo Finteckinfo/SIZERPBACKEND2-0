@@ -85,10 +85,24 @@ Your backend is accessible at:
 3. Test JWT authentication with your frontend
 4. Check logs for successful JWT verification messages
 
+## NEXTAUTH_SECRET (Critical for Sizland / buy.siz.land)
+
+**The backend and Sizland (Vercel) must use the SAME NEXTAUTH_SECRET.**
+
+- Sizland signs JWTs with its NEXTAUTH_SECRET.
+- The backend verifies them with NEXTAUTH_SECRET.
+- If they differ → **"invalid signature"** on `/api/land/*`, `/api/admin/*`, etc.
+
+**Fix:**
+1. In Vercel → Sizland project → Settings → Environment Variables → copy `NEXTAUTH_SECRET`.
+2. In Railway → SIZERPBACKEND2-0 → Variables → set `NEXTAUTH_SECRET` to that exact value.
+3. Redeploy Railway so the new variable is applied.
+
 ## Troubleshooting
 
 If you encounter issues:
 1. Verify all environment variables are set correctly
-2. Check that the JWT template matches exactly
-3. Ensure the audience URL matches your backend domain
-4. Check application logs for detailed error messages
+2. **Ensure NEXTAUTH_SECRET matches between Vercel (Sizland) and Railway (Backend)**
+3. Check that the JWT template matches exactly
+4. Ensure the audience URL matches your backend domain
+5. Check application logs for detailed error messages

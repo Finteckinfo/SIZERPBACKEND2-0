@@ -73,12 +73,14 @@ export function loadSecurityConfig(): SecurityConfig {
     // Development mode - allow fallbacks but warn
     if (!jwtSecret) {
       console.warn('[SECURITY WARNING] JWT_SECRET not set. Using development fallback. DO NOT USE IN PRODUCTION.');
-      // Use consistent secret to survive restarts
       jwtSecret = 'dev-jwt-secret-fallback-constant-value-2025';
     }
     if (!nextAuthSecret) {
-      console.warn('[SECURITY WARNING] NEXTAUTH_SECRET not set. Using development fallback. DO NOT USE IN PRODUCTION.');
-      nextAuthSecret = 'dev-nextauth-secret-NOT-FOR-PRODUCTION-' + Math.random().toString(36);
+      console.warn(
+        '[SECURITY WARNING] NEXTAUTH_SECRET not set. Using fixed dev fallback. MUST match Sizland/Vercel NEXTAUTH_SECRET for auth to work.'
+      );
+      // MUST be identical to Sizland's NEXTAUTH_SECRET when both run in dev without env. Do NOT use random.
+      nextAuthSecret = 'dev-nextauth-secret-MUST-MATCH-SIZLAND-32chars';
     }
   }
 
