@@ -25,8 +25,8 @@ router.get('/progress', async (req: Request, res: Response) => {
       where: { userId },
       orderBy: { createdAt: 'desc' },
       include: {
-        selectedPlot: { include: { images: true } },
-        plots: { include: { images: true } },
+        selectedPlot: { include: { images: true, satelliteVerification: true } },
+        plots: { include: { images: true, satelliteVerification: true } },
       },
     });
 
@@ -271,8 +271,8 @@ router.get('/request/:id', async (req: Request, res: Response) => {
     const request = await prisma.landAcquisitionRequest.findFirst({
       where: { id, userId },
       include: {
-        selectedPlot: { include: { images: true } },
-        plots: { include: { images: true } },
+        selectedPlot: { include: { images: true, satelliteVerification: true } },
+        plots: { include: { images: true, satelliteVerification: true } },
       },
     });
 
@@ -314,7 +314,7 @@ router.post('/select-plot', async (req: Request, res: Response) => {
         selectedPlotId: plotId,
         status: LandRequestStatus.PLOT_SELECTED,
       },
-      include: { selectedPlot: { include: { images: true } } },
+      include: { selectedPlot: { include: { images: true, satelliteVerification: true } } },
     });
 
     return res.json({ success: true, request: updated });
@@ -385,8 +385,8 @@ router.get('/admin/requests', async (_req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true } },
-        plots: { include: { images: true } },
-        selectedPlot: { include: { images: true } },
+        plots: { include: { images: true, satelliteVerification: true } },
+        selectedPlot: { include: { images: true, satelliteVerification: true } },
       },
     });
     return res.json(requests);
@@ -402,9 +402,25 @@ router.get('/admin/requests', async (_req: Request, res: Response) => {
  */
 router.post('/admin/plots', async (req: Request, res: Response) => {
   try {
-    const { requestId, name, fullAddress, description, escrowAmount, images } = req.body;
+    const { requestId, name, fullAddress, description, escrowAmount, images, latitude, longitude, boundaryGeoJSON } = req.body;
     if (!requestId || !name || !fullAddress) {
       return res.status(400).json({ error: 'requestId, name, and fullAddress are required' });
+    }
+
+    // Validate lat/lng if provided (CASSINI geospatial)
+    let latNum: number | null = null;
+    let lngNum: number | null = null;
+    if (latitude != null) {
+      latNum = Number(latitude);
+      if (isNaN(latNum) || latNum < -90 || latNum > 90) {
+        return res.status(400).json({ error: 'latitude must be between -90 and 90' });
+      }
+    }
+    if (longitude != null) {
+      lngNum = Number(longitude);
+      if (isNaN(lngNum) || lngNum < -180 || lngNum > 180) {
+        return res.status(400).json({ error: 'longitude must be between -180 and 180' });
+      }
     }
 
     const plot = await prisma.landPlot.create({
@@ -414,6 +430,9 @@ router.post('/admin/plots', async (req: Request, res: Response) => {
         fullAddress: String(fullAddress).trim(),
         description: description ? String(description).trim() : null,
         escrowAmount: escrowAmount != null ? Number(escrowAmount) : null,
+        latitude: latNum,
+        longitude: lngNum,
+        boundaryGeoJSON: boundaryGeoJSON ?? undefined,
         images: images?.length
           ? {
               create: images.map((img: { url: string; order?: number }, i: number) => ({
@@ -423,7 +442,7 @@ router.post('/admin/plots', async (req: Request, res: Response) => {
             }
           : undefined,
       },
-      include: { images: true },
+      include: { images: true, satelliteVerification: true },
     });
 
     await prisma.landAcquisitionRequest.update({

@@ -485,12 +485,31 @@ model LandPlot {
   fullAddress String
   description String?
   escrowAmount Float?                  // e.g. 5000
+  latitude    Float?                   // For satellite AOI (CASSINI)
+  longitude   Float?                   // For satellite AOI (CASSINI)
+  boundaryGeoJSON Json?                // Optional polygon for exact boundaries
   images      LandPlotImage[]
+  satelliteVerification SatelliteVerification?
   selectedBy  LandAcquisitionRequest[] @relation("SelectedPlot")
   createdAt   DateTime                 @default(now())
   updatedAt   DateTime                 @updatedAt
 
   @@index([requestId])
+}
+
+model SatelliteVerification {
+  id                   String   @id @default(cuid())
+  plot                 LandPlot @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  plotId               String   @unique
+  lastImageryDate      DateTime?
+  changeDetectionStatus String?  // STABLE, LAND_CLEARED, CONSTRUCTION_STARTED
+  hasVerified          Boolean  @default(false)
+  osnmaProofHash       String?
+  imageryUrl           String?  // Cached Sentinel-2 thumbnail or WMS URL
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([plotId])
 }
 
 model LandPlotImage {
