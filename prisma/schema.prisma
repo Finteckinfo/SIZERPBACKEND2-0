@@ -72,6 +72,7 @@ model User {
   firstName     String?
   lastName      String?
   avatarUrl     String?
+  isLandAdmin   Boolean         @default(false)  // Land acquisition admin (plots, coordinates)
   passwordHash  String?
   walletAddress String?
   roles         UserRole[]

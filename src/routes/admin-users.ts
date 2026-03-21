@@ -42,6 +42,7 @@ router.get('/', requireNextAuthToken, requireAdmin, async (req: Request, res: Re
           lastName: true,
           avatarUrl: true,
           walletAddress: true,
+          isLandAdmin: true,
           createdAt: true
         },
         skip: offset,
@@ -55,6 +56,27 @@ router.get('/', requireNextAuthToken, requireAdmin, async (req: Request, res: Re
   } catch (err: any) {
     console.error('[Admin Users] Error:', err.message || err);
     res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// PATCH /api/admin/users/:userId/land-admin - set isLandAdmin (site admins only)
+router.patch('/:userId/land-admin', requireNextAuthToken, requireAdmin, async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const { isLandAdmin } = req.body;
+  if (typeof isLandAdmin !== 'boolean') {
+    return res.status(400).json({ error: 'isLandAdmin must be a boolean' });
+  }
+  try {
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { isLandAdmin },
+      select: { id: true, email: true, isLandAdmin: true },
+    });
+    return res.json({ success: true, user });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'User not found' });
+    console.error('[Admin Users] PATCH land-admin error:', err.message || err);
+    return res.status(500).json({ error: 'Failed to update land admin status' });
   }
 });
 

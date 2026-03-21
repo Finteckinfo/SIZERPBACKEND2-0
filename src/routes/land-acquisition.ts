@@ -362,15 +362,23 @@ router.post('/escrow', async (req: Request, res: Response) => {
   }
 });
 
-// Admin check: require ADMIN_EMAILS
-const requireLandAdmin = (req: Request, res: Response, next: NextFunction) => {
+// Admin check: user.isLandAdmin OR email in ADMIN_EMAILS (bootstrap)
+const requireLandAdmin = async (req: Request, res: Response, next: NextFunction) => {
   const email = req.user?.email;
   if (!email) return res.status(401).json({ error: 'Unauthorized' });
+
   const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-  if (adminEmails.length > 0 && !adminEmails.includes(email.toLowerCase())) {
-    return res.status(403).json({ error: 'Admin access required' });
+  if (adminEmails.length > 0 && adminEmails.includes(email.toLowerCase())) {
+    return next();
   }
-  next();
+
+  const dbUser = await prisma.user.findFirst({
+    where: { email: { equals: email, mode: 'insensitive' } },
+    select: { isLandAdmin: true },
+  });
+  if (dbUser?.isLandAdmin) return next();
+
+  return res.status(403).json({ error: 'Land admin access required' });
 };
 
 router.use('/admin', requireLandAdmin);
