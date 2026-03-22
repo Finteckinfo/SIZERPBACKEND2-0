@@ -141,20 +141,27 @@ router.patch('/connect-wallet', async (req: Request, res: Response) => {
       });
     }
 
-    // Also update User wallet for consistency
-    await prisma.user.update({
-      where: { id: userId },
-      data: { walletAddress: walletAddress.trim() },
-    });
+    // Also update User wallet for consistency (non-fatal if user missing)
+    try {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { walletAddress: walletAddress.trim() },
+      });
+    } catch (userErr: any) {
+      console.warn('[LandAcquisition] Could not sync wallet to User (non-fatal):', userErr?.code, userErr?.message);
+    }
 
     return res.json({
       success: true,
       request,
       currentStep: LandRequestStep.CONNECT_WALLET,
     });
-  } catch (err) {
-    console.error('[LandAcquisition] PATCH connect-wallet error:', err);
-    return res.status(500).json({ error: 'Failed to connect wallet' });
+  } catch (err: any) {
+    console.error('[LandAcquisition] PATCH connect-wallet error:', err?.message || err, err?.code);
+    return res.status(500).json({
+      error: 'Failed to connect wallet',
+      ...(process.env.NODE_ENV === 'development' && { details: err?.message }),
+    });
   }
 });
 
