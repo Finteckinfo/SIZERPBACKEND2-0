@@ -373,21 +373,29 @@ router.post('/escrow', async (req: Request, res: Response) => {
 
 // Admin check: user.isLandAdmin OR email in ADMIN_EMAILS (bootstrap)
 const requireLandAdmin = async (req: Request, res: Response, next: NextFunction) => {
-  const email = req.user?.email;
-  if (!email) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const email = req.user?.email;
+    if (!email) return res.status(401).json({ error: 'Unauthorized' });
 
-  const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-  if (adminEmails.length > 0 && adminEmails.includes(email.toLowerCase())) {
-    return next();
+    const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    if (adminEmails.length > 0 && adminEmails.includes(email.toLowerCase())) {
+      return next();
+    }
+
+    const dbUser = await prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { isLandAdmin: true },
+    });
+    if (dbUser?.isLandAdmin) return next();
+
+    return res.status(403).json({ error: 'Land admin access required' });
+  } catch (err) {
+    console.error('[LandAcquisition] requireLandAdmin error:', err);
+    return res.status(500).json({
+      error: 'Land admin check failed',
+      hint: 'If this started after a deploy, run prisma migrate deploy on the Railway service (missing User.isLandAdmin or related columns).',
+    });
   }
-
-  const dbUser = await prisma.user.findFirst({
-    where: { email: { equals: email, mode: 'insensitive' } },
-    select: { isLandAdmin: true },
-  });
-  if (dbUser?.isLandAdmin) return next();
-
-  return res.status(403).json({ error: 'Land admin access required' });
 };
 
 router.use('/admin', requireLandAdmin);
@@ -409,7 +417,10 @@ router.get('/admin/requests', async (_req: Request, res: Response) => {
     return res.json(requests);
   } catch (err) {
     console.error('[LandAcquisition] Admin GET requests error:', err);
-    return res.status(500).json({ error: 'Failed to fetch requests' });
+    return res.status(500).json({
+      error: 'Failed to fetch requests',
+      hint: 'Often a schema drift issue: ensure Railway ran `npx prisma migrate deploy` after pulling migrations (LandPlot geo + SatelliteVerification + User.isLandAdmin).',
+    });
   }
 });
 
