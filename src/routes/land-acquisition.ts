@@ -25,6 +25,7 @@ router.get('/progress', async (req: Request, res: Response) => {
       where: { userId },
       orderBy: { createdAt: 'desc' },
       include: {
+        documents: true,
         selectedPlot: { include: { images: true, satelliteVerification: true } },
         plots: { include: { images: true, satelliteVerification: true } },
       },
@@ -62,6 +63,7 @@ router.get('/progress', async (req: Request, res: Response) => {
         escrowId: request.escrowId,
         escrowAmount: request.escrowAmount,
         escrowFundedAt: request.escrowFundedAt,
+        documents: request.documents,
         selectedPlot: request.selectedPlot,
         plots,
         createdAt: request.createdAt,
