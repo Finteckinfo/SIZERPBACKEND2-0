@@ -1,11 +1,39 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateToken } from '../middleware/auth.js';
 import { prisma } from '../utils/prisma.js';
-import { LandRequestStep, LandRequestStatus } from '@prisma/client';
+import { LandRequestStep, LandRequestStatus, LandListingStatus } from '@prisma/client';
 
 const router = Router();
 
-// All routes require authentication
+/**
+ * GET /api/land-acquisition/catalog/listings
+ * Published inventory for public browse (no authentication).
+ */
+router.get('/catalog/listings', async (_req: Request, res: Response) => {
+  try {
+    const listings = await prisma.landListing.findMany({
+      where: { status: LandListingStatus.PUBLISHED },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        fullAddress: true,
+        listPrice: true,
+        currency: true,
+        latitude: true,
+        longitude: true,
+        updatedAt: true,
+      },
+    });
+    return res.json(listings);
+  } catch (err) {
+    console.error('[LandAcquisition] GET public catalog error:', err);
+    return res.status(500).json({ error: 'Failed to load listings' });
+  }
+});
+
+// All routes below require authentication
 router.use(authenticateToken);
 
 /**
@@ -533,6 +561,141 @@ router.post('/admin/documents', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[LandAcquisition] Admin POST documents error:', err);
     return res.status(500).json({ error: 'Failed to upload document' });
+  }
+});
+
+function parseOptionalLatLng(latitude: unknown, longitude: unknown): { lat: number | null; lng: number | null } {
+  let latNum: number | null = null;
+  let lngNum: number | null = null;
+  if (latitude != null && latitude !== '') {
+    latNum = Number(latitude);
+    if (isNaN(latNum) || latNum < -90 || latNum > 90) {
+      throw new Error('latitude must be between -90 and 90');
+    }
+  }
+  if (longitude != null && longitude !== '') {
+    lngNum = Number(longitude);
+    if (isNaN(lngNum) || lngNum < -180 || lngNum > 180) {
+      throw new Error('longitude must be between -180 and 180');
+    }
+  }
+  return { lat: latNum, lng: lngNum };
+}
+
+/**
+ * GET /api/land-acquisition/admin/catalog/listings
+ */
+router.get('/admin/catalog/listings', async (_req: Request, res: Response) => {
+  try {
+    const listings = await prisma.landListing.findMany({
+      orderBy: { updatedAt: 'desc' },
+    });
+    return res.json(listings);
+  } catch (err) {
+    console.error('[LandAcquisition] Admin GET catalog error:', err);
+    return res.status(500).json({ error: 'Failed to fetch catalog listings' });
+  }
+});
+
+/**
+ * POST /api/land-acquisition/admin/catalog/listings
+ */
+router.post('/admin/catalog/listings', async (req: Request, res: Response) => {
+  try {
+    const { title, description, fullAddress, listPrice, currency, latitude, longitude, boundaryGeoJSON, status } =
+      req.body;
+    if (!title || !fullAddress) {
+      return res.status(400).json({ error: 'title and fullAddress are required' });
+    }
+    let latLng: { lat: number | null; lng: number | null };
+    try {
+      latLng = parseOptionalLatLng(latitude, longitude);
+    } catch (e: any) {
+      return res.status(400).json({ error: e.message || 'Invalid coordinates' });
+    }
+
+    const listing = await prisma.landListing.create({
+      data: {
+        title: String(title).trim(),
+        description: description != null ? String(description).trim() : null,
+        fullAddress: String(fullAddress).trim(),
+        listPrice: listPrice != null && listPrice !== '' ? Number(listPrice) : null,
+        currency: currency != null && String(currency).trim() ? String(currency).trim() : 'USD',
+        latitude: latLng.lat,
+        longitude: latLng.lng,
+        boundaryGeoJSON: boundaryGeoJSON ?? undefined,
+        status:
+          status === 'PUBLISHED' || status === LandListingStatus.PUBLISHED
+            ? LandListingStatus.PUBLISHED
+            : LandListingStatus.DRAFT,
+      },
+    });
+    return res.json({ success: true, listing });
+  } catch (err) {
+    console.error('[LandAcquisition] Admin POST catalog error:', err);
+    return res.status(500).json({ error: 'Failed to create listing' });
+  }
+});
+
+/**
+ * PATCH /api/land-acquisition/admin/catalog/listings/:id
+ */
+router.patch('/admin/catalog/listings/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    const { title, description, fullAddress, listPrice, currency, latitude, longitude, boundaryGeoJSON, status } =
+      req.body;
+
+    const data: Record<string, unknown> = {};
+    if (title !== undefined) data.title = String(title).trim();
+    if (description !== undefined) data.description = description != null ? String(description).trim() : null;
+    if (fullAddress !== undefined) data.fullAddress = String(fullAddress).trim();
+    if (listPrice !== undefined) data.listPrice = listPrice === '' || listPrice == null ? null : Number(listPrice);
+    if (currency !== undefined) data.currency = currency != null ? String(currency).trim() : 'USD';
+    if (latitude !== undefined || longitude !== undefined) {
+      const cur = await prisma.landListing.findUnique({ where: { id }, select: { latitude: true, longitude: true } });
+      const latIn = latitude !== undefined ? latitude : cur?.latitude;
+      const lngIn = longitude !== undefined ? longitude : cur?.longitude;
+      try {
+        const ll = parseOptionalLatLng(latIn, lngIn);
+        data.latitude = ll.lat;
+        data.longitude = ll.lng;
+      } catch (e: any) {
+        return res.status(400).json({ error: e.message || 'Invalid coordinates' });
+      }
+    }
+    if (boundaryGeoJSON !== undefined) data.boundaryGeoJSON = boundaryGeoJSON;
+    if (status !== undefined) {
+      data.status =
+        status === 'PUBLISHED' || status === LandListingStatus.PUBLISHED
+          ? LandListingStatus.PUBLISHED
+          : LandListingStatus.DRAFT;
+    }
+
+    const listing = await prisma.landListing.update({
+      where: { id },
+      data: data as any,
+    });
+    return res.json({ success: true, listing });
+  } catch (err) {
+    console.error('[LandAcquisition] Admin PATCH catalog error:', err);
+    return res.status(500).json({ error: 'Failed to update listing' });
+  }
+});
+
+/**
+ * DELETE /api/land-acquisition/admin/catalog/listings/:id
+ */
+router.delete('/admin/catalog/listings/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    await prisma.landListing.delete({ where: { id } });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[LandAcquisition] Admin DELETE catalog error:', err);
+    return res.status(500).json({ error: 'Failed to delete listing' });
   }
 });
 

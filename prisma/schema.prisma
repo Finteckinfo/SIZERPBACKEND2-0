@@ -537,6 +537,29 @@ model LandAcquisitionDocument {
   @@index([requestId])
 }
 
+// Public catalog: land offered before a buyer request exists (admin-managed inventory)
+enum LandListingStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model LandListing {
+  id              String             @id @default(cuid())
+  title           String
+  description     String?
+  fullAddress     String
+  listPrice       Float?
+  currency        String?            @default("USD")
+  latitude        Float?
+  longitude       Float?
+  boundaryGeoJSON Json?
+  status          LandListingStatus  @default(DRAFT)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([status])
+}
+
 model CspViolation {
   id                  String   @id @default(cuid())
   documentUri         String
