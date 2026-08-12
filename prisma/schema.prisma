@@ -457,6 +457,8 @@ model LandAcquisitionRequest {
   user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId            String
   walletAddress     String?           // Set when user connects wallet
+  contactName       String?           // Communication name from Create Request (not legal name)
+  contactEmail      String?           // Follow-up email for sourcing notifications
   budget            Float?            // e.g. 100000 - set at Create Request
   sizeCurve         String?           // e.g. "1 Acre"
   purpose           String?           // e.g. "Farming", "Speculation"
@@ -476,6 +478,7 @@ model LandAcquisitionRequest {
   @@index([userId])
   @@index([status])
   @@index([createdAt])
+  @@index([contactEmail])
 }
 
 model LandPlot {

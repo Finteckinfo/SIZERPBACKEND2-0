@@ -202,12 +202,31 @@ router.patch('/connect-wallet', async (req: Request, res: Response) => {
 router.post('/create-request', async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
-    const { walletAddress, budget, sizeCurve, purpose, plotReference } = req.body;
+    const {
+      walletAddress,
+      budget,
+      sizeCurve,
+      purpose,
+      plotReference,
+      contactName,
+      contactEmail,
+      name,
+      email,
+    } = req.body;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     if (budget == null || !sizeCurve || !purpose) {
       return res.status(400).json({
         error: 'budget, sizeCurve, and purpose are required',
       });
+    }
+
+    const resolvedName = String(contactName || name || '').trim();
+    const resolvedEmail = String(contactEmail || email || '').trim().toLowerCase();
+    if (!resolvedName) {
+      return res.status(400).json({ error: 'Name is required for communication' });
+    }
+    if (!resolvedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resolvedEmail)) {
+      return res.status(400).json({ error: 'A valid email is required for follow-up' });
     }
 
     const budgetNum = typeof budget === 'string' ? parseFloat(budget) : Number(budget);
@@ -220,11 +239,17 @@ router.post('/create-request', async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
     });
 
+    const contactData = {
+      contactName: resolvedName,
+      contactEmail: resolvedEmail,
+    };
+
     if (!request) {
       request = await prisma.landAcquisitionRequest.create({
         data: {
           userId,
           walletAddress: walletAddress?.trim() || null,
+          ...contactData,
           budget: budgetNum,
           sizeCurve: String(sizeCurve).trim(),
           purpose: String(purpose).trim(),
@@ -238,6 +263,7 @@ router.post('/create-request', async (req: Request, res: Response) => {
         where: { id: request.id },
         data: {
           walletAddress: walletAddress?.trim() || request.walletAddress,
+          ...contactData,
           budget: budgetNum,
           sizeCurve: String(sizeCurve).trim(),
           purpose: String(purpose).trim(),
@@ -248,10 +274,18 @@ router.post('/create-request', async (req: Request, res: Response) => {
       });
     }
 
+    // Ops signal: contactEmail is indexed for manual <48h sourcing follow-up
+    console.info('[LandAcquisition] sourcing follow-up queued', {
+      requestId: request.id,
+      contactEmail: resolvedEmail,
+      contactName: resolvedName,
+    });
+
     return res.json({
       success: true,
       request,
       currentStep: LandRequestStep.CONFIRMATION,
+      sourcingFollowUp: true,
     });
   } catch (err) {
     console.error('[LandAcquisition] POST create-request error:', err);
