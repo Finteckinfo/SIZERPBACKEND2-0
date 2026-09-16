@@ -86,6 +86,8 @@ router.get('/progress', async (req: Request, res: Response) => {
       request: {
         id: request.id,
         walletAddress: request.walletAddress,
+        contactName: request.contactName,
+        contactEmail: request.contactEmail,
         budget: request.budget,
         sizeCurve: request.sizeCurve,
         purpose: request.purpose,
@@ -215,7 +217,7 @@ router.patch('/connect-wallet', async (req: Request, res: Response) => {
 
 /**
  * POST /api/land-acquisition/create-request
- * Submit Create Request form (budget, size, purpose)
+ * Submit Create Request form (purpose + contact). Budget/size are optional — users filter later when browsing.
  */
 router.post('/create-request', async (req: Request, res: Response) => {
   try {
@@ -232,9 +234,9 @@ router.post('/create-request', async (req: Request, res: Response) => {
       email,
     } = req.body;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    if (budget == null || !sizeCurve || !purpose) {
+    if (!purpose) {
       return res.status(400).json({
-        error: 'budget, sizeCurve, and purpose are required',
+        error: 'purpose is required',
       });
     }
 
@@ -247,10 +249,16 @@ router.post('/create-request', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'A valid email is required for follow-up' });
     }
 
-    const budgetNum = typeof budget === 'string' ? parseFloat(budget) : Number(budget);
-    if (isNaN(budgetNum) || budgetNum < 0) {
-      return res.status(400).json({ error: 'Invalid budget' });
+    let budgetNum: number | null = null;
+    if (budget != null && budget !== '') {
+      budgetNum = typeof budget === 'string' ? parseFloat(budget) : Number(budget);
+      if (isNaN(budgetNum) || budgetNum < 0) {
+        return res.status(400).json({ error: 'Invalid budget' });
+      }
     }
+
+    const resolvedSize =
+      sizeCurve != null && String(sizeCurve).trim() ? String(sizeCurve).trim() : null;
 
     let request = await prisma.landAcquisitionRequest.findFirst({
       where: { userId },
@@ -269,7 +277,7 @@ router.post('/create-request', async (req: Request, res: Response) => {
           walletAddress: walletAddress?.trim() || null,
           ...contactData,
           budget: budgetNum,
-          sizeCurve: String(sizeCurve).trim(),
+          sizeCurve: resolvedSize,
           purpose: String(purpose).trim(),
           plotReference: plotReference ? String(plotReference).trim() : null,
           currentStep: LandRequestStep.CONFIRMATION,
@@ -283,7 +291,7 @@ router.post('/create-request', async (req: Request, res: Response) => {
           walletAddress: walletAddress?.trim() || request.walletAddress,
           ...contactData,
           budget: budgetNum,
-          sizeCurve: String(sizeCurve).trim(),
+          sizeCurve: resolvedSize ?? request.sizeCurve,
           purpose: String(purpose).trim(),
           plotReference: plotReference ? String(plotReference).trim() : null,
           currentStep: LandRequestStep.CONFIRMATION,

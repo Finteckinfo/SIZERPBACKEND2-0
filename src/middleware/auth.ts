@@ -105,35 +105,42 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 			return res.status(401).json({ error: 'Invalid session token: ' + claimValidation.error });
 		}
 
-		// 5) Extract user info from token (support wallet-only tokens with email as identifier)
-		const email = decoded.email;
-		const sub = decoded.sub || decoded.id || decoded.userId || email;
+		// 5) Extract user info. SizWallet tokens have pairwise sub and no email.
+		const rawEmail = typeof decoded.email === 'string' ? decoded.email.trim() : '';
+		const sub = String(decoded.sub || decoded.id || decoded.userId || rawEmail || '').trim();
 		const name = decoded.name;
+		const hasEmail = rawEmail.includes('@');
 
 		if (!sub) {
 			return res.status(401).json({ error: 'Session token missing user identifier' });
 		}
 
-		if (!email) {
-			return res.status(401).json({ error: 'Session token missing email' });
-		}
+		const email = hasEmail
+			? rawEmail.toLowerCase()
+			: `sw${Buffer.from(sub, 'utf8').toString('hex').slice(0, 48)}@sizwallet.local`;
 
 		// 5.5) Check account lockout
-		if (securityMonitor.isAccountLocked(sub || email)) {
-			console.warn('[Security] Attempt to access locked account:', email);
+		if (securityMonitor.isAccountLocked(sub)) {
+			console.warn('[Security] Attempt to access locked account:', sub);
 			return res.status(423).json({ error: 'Account temporarily locked due to security concerns' });
 		}
 
-		// 6) Sync / fetch user in Prisma
+		// 6) Sync / fetch user in Prisma — prefer stable id (SizWallet sub), then email
 		try {
 			let dbUser = await prisma.user.findUnique({
-				where: { email },
+				where: { id: sub },
 				select: { id: true, email: true, firstName: true, lastName: true }
 			});
 
+			if (!dbUser && hasEmail) {
+				dbUser = await prisma.user.findUnique({
+					where: { email },
+					select: { id: true, email: true, firstName: true, lastName: true }
+				});
+			}
+
 			if (!dbUser) {
-				// Create user from NextAuth session
-				const nameParts = name ? name.split(' ') : [];
+				const nameParts = name ? String(name).split(' ') : [];
 				dbUser = await prisma.user.create({
 					data: {
 						id: sub,
@@ -143,7 +150,7 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
 					},
 					select: { id: true, email: true, firstName: true, lastName: true }
 				});
-				console.log('[Auth] Created new user from NextAuth session:', email);
+				console.log('[Auth] Created new user from session:', dbUser.id);
 			}
 
 			req.user = {

@@ -144,13 +144,9 @@ export function validateTokenAge(iat: number): boolean {
  * Validate JWT claims
  */
 export function validateJWTClaims(decoded: any): { valid: boolean; error?: string } {
-  // Check required claims - allow sub, id, userId, or email as identifier
+  // Identifier is enough. SizWallet OIDC is pairwise `sub` only — no email in the token.
   if (!decoded.sub && !decoded.id && !decoded.userId && !decoded.email) {
     return { valid: false, error: 'Missing user identifier in token' };
-  }
-
-  if (!decoded.email) {
-    return { valid: false, error: 'Missing email in token' };
   }
 
   // Check issued at time

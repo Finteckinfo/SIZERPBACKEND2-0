@@ -475,7 +475,7 @@ router.post('/wallet-login', async (req: Request, res: Response) => {
       {
         sub: user.id,
         userId: user.id,
-        email: user.email, // Required by validateJWTClaims and authenticateToken
+        email: user.email,
         walletAddress: normalizedAddress,
         authType: 'web3'
       },
