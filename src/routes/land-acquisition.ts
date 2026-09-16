@@ -280,7 +280,7 @@ router.post('/create-request', async (req: Request, res: Response) => {
           sizeCurve: resolvedSize,
           purpose: String(purpose).trim(),
           plotReference: plotReference ? String(plotReference).trim() : null,
-          currentStep: LandRequestStep.CONFIRMATION,
+          currentStep: LandRequestStep.CREATE_REQUEST,
           status: LandRequestStatus.REQUEST_CREATED,
         },
       });
@@ -294,14 +294,14 @@ router.post('/create-request', async (req: Request, res: Response) => {
           sizeCurve: resolvedSize ?? request.sizeCurve,
           purpose: String(purpose).trim(),
           plotReference: plotReference ? String(plotReference).trim() : null,
-          currentStep: LandRequestStep.CONFIRMATION,
+          currentStep: LandRequestStep.CREATE_REQUEST,
           status: LandRequestStatus.REQUEST_CREATED,
         },
       });
     }
 
     // Ops signal: contactEmail is indexed for manual <48h sourcing follow-up
-    console.info('[LandAcquisition] sourcing follow-up queued', {
+    console.info('[LandAcquisition] intake details saved', {
       requestId: request.id,
       contactEmail: resolvedEmail,
       contactName: resolvedName,
@@ -310,8 +310,8 @@ router.post('/create-request', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       request,
-      currentStep: LandRequestStep.CONFIRMATION,
-      sourcingFollowUp: true,
+      currentStep: LandRequestStep.CREATE_REQUEST,
+      sourcingFollowUp: false,
     });
   } catch (err) {
     console.error('[LandAcquisition] POST create-request error:', err);
