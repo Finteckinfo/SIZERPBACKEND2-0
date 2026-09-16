@@ -60,8 +60,13 @@ router.get('/progress', async (req: Request, res: Response) => {
     });
 
     if (!request) {
-      return res.json({ request: null, currentStep: 'LOGIN' });
+      return res.json({ request: null, currentStep: LandRequestStep.CREATE_REQUEST });
     }
+
+    const currentStep =
+      request.currentStep === LandRequestStep.CONFIRMATION
+        ? LandRequestStep.CONFIRMATION
+        : LandRequestStep.CREATE_REQUEST;
 
     // Filter plots in DB layer: by search (name/fullAddress) and maxEscrow
     let plots = request.plots;
@@ -85,7 +90,7 @@ router.get('/progress', async (req: Request, res: Response) => {
         sizeCurve: request.sizeCurve,
         purpose: request.purpose,
         plotReference: request.plotReference,
-        currentStep: request.currentStep,
+        currentStep,
         status: request.status,
         selectedPlotId: request.selectedPlotId,
         escrowId: request.escrowId,
@@ -96,7 +101,7 @@ router.get('/progress', async (req: Request, res: Response) => {
         plots,
         createdAt: request.createdAt,
       },
-      currentStep: request.currentStep,
+      currentStep,
     });
   } catch (err) {
     console.error('[LandAcquisition] GET progress error:', err);
@@ -106,7 +111,7 @@ router.get('/progress', async (req: Request, res: Response) => {
 
 /**
  * POST /api/land-acquisition/start
- * Start or resume workflow - creates draft request at CONNECT_WALLET step
+ * Start or resume workflow — SizWallet login already happened; intake starts at Create Request.
  */
 router.post('/start', async (req: Request, res: Response) => {
   try {
@@ -119,18 +124,22 @@ router.post('/start', async (req: Request, res: Response) => {
     });
 
     if (existing) {
-      return res.json({ request: existing, currentStep: existing.currentStep });
+      const currentStep =
+        existing.currentStep === LandRequestStep.CONFIRMATION
+          ? LandRequestStep.CONFIRMATION
+          : LandRequestStep.CREATE_REQUEST;
+      return res.json({ request: existing, currentStep });
     }
 
     const request = await prisma.landAcquisitionRequest.create({
       data: {
         userId,
-        currentStep: LandRequestStep.CONNECT_WALLET,
+        currentStep: LandRequestStep.CREATE_REQUEST,
         status: LandRequestStatus.REQUEST_CREATED,
       },
     });
 
-    return res.json({ request, currentStep: LandRequestStep.CONNECT_WALLET });
+    return res.json({ request, currentStep: LandRequestStep.CREATE_REQUEST });
   } catch (err) {
     console.error('[LandAcquisition] POST start error:', err);
     return res.status(500).json({ error: 'Failed to start workflow' });
@@ -160,14 +169,20 @@ router.patch('/connect-wallet', async (req: Request, res: Response) => {
         data: {
           userId,
           walletAddress: walletAddress.trim(),
-          currentStep: LandRequestStep.CONNECT_WALLET,
+          currentStep: LandRequestStep.CREATE_REQUEST,
           status: LandRequestStatus.REQUEST_CREATED,
         },
       });
     } else {
       request = await prisma.landAcquisitionRequest.update({
         where: { id: request.id },
-        data: { walletAddress: walletAddress.trim() },
+        data: {
+          walletAddress: walletAddress.trim(),
+          currentStep:
+            request.currentStep === LandRequestStep.CONFIRMATION
+              ? LandRequestStep.CONFIRMATION
+              : LandRequestStep.CREATE_REQUEST,
+        },
       });
     }
 
@@ -184,7 +199,10 @@ router.patch('/connect-wallet', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       request,
-      currentStep: LandRequestStep.CONNECT_WALLET,
+      currentStep:
+        request.currentStep === LandRequestStep.CONFIRMATION
+          ? LandRequestStep.CONFIRMATION
+          : LandRequestStep.CREATE_REQUEST,
     });
   } catch (err: any) {
     console.error('[LandAcquisition] PATCH connect-wallet error:', err?.message || err, err?.code);
