@@ -787,6 +787,14 @@ const requireLandAdmin = async (req: Request, res: Response, next: NextFunction)
 router.use('/admin', requireLandAdmin);
 
 /**
+ * GET /api/land-acquisition/admin/access
+ * Cheap land-admin probe for post-login routing.
+ */
+router.get('/admin/access', async (_req: Request, res: Response) => {
+  return res.json({ landAdmin: true });
+});
+
+/**
  * GET /api/land-acquisition/admin/requests
  * List all requests (admin)
  */
