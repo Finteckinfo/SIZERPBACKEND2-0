@@ -591,7 +591,7 @@ router.post('/select-listing', async (req: Request, res: Response) => {
     await notifyLandAdmins(
       'New deal',
       `${deal.contactName || 'A buyer'} selected ${deal.listing?.title || 'a listing'}.`,
-      '/admin/land'
+      '/admin/deals'
     );
 
     return res.json({ success: true, deal, alreadySelected: false });
@@ -698,7 +698,7 @@ router.post('/submissions', async (req: Request, res: Response) => {
     await notifyLandAdmins(
       'New asset for vetting',
       `${listing.title} was submitted and needs review.`,
-      '/admin/land'
+      '/admin/vetting'
     );
 
     return res.json({ success: true, listing });
