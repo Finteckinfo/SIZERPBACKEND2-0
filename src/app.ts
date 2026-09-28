@@ -43,7 +43,7 @@ dotenv.config();
 
 export const app = express();
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '12mb' }));
 app.use(cookieParser());
 app.use(logger);
 

@@ -473,8 +473,17 @@ model LandAcquisitionRequest {
   escrowId          String?           // External escrow identifier
   escrowAmount      Float?
   escrowFundedAt    DateTime?
+  legalFullName     String?
+  legalIdType       String?
+  legalIdNumber     String?
+  nationality       String?
+  registryRef       String?
+  courierTracking   String?
   plots             LandPlot[]        @relation("RequestPlots")  // Plots uploaded for this request
   documents         LandAcquisitionDocument[]
+  files             LandFile[]
+  diligenceItems    LandDiligenceItem[]
+  messages          LandMessage[]
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
@@ -574,11 +583,15 @@ model LandListing {
   badges             String[]           @default([])
   media              Json?
   satelliteSceneDate DateTime?
+  satelliteStatus    String?
+  satelliteNotes     String?
+  satelliteVerifiedAt DateTime?
   submittedBy        User?              @relation("ListingSubmitter", fields: [submittedByUserId], references: [id], onDelete: SetNull)
   submittedByUserId  String?
   rejectionReason    String?
   status             LandListingStatus  @default(DRAFT)
   deals              LandAcquisitionRequest[]
+  files              LandFile[]
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
@@ -596,6 +609,66 @@ model LandNotification {
   createdAt DateTime @default(now())
 
   @@index([userId, read])
+}
+
+model LandFile {
+  id               String                  @id @default(cuid())
+  uploadedByUserId String
+  filename         String
+  mimeType         String
+  byteSize         Int
+  data             Bytes
+  kind             String                  @default("OTHER")
+  listing          LandListing?            @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  listingId        String?
+  request          LandAcquisitionRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  requestId        String?
+  createdAt        DateTime                @default(now())
+
+  @@index([listingId])
+  @@index([requestId])
+}
+
+model LandDiligenceItem {
+  id              String                 @id @default(cuid())
+  request         LandAcquisitionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId       String
+  key             String
+  label           String
+  done            Boolean                @default(false)
+  notes           String?
+  updatedByUserId String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  @@unique([requestId, key])
+  @@index([requestId])
+}
+
+model LandMessage {
+  id         String                 @id @default(cuid())
+  request    LandAcquisitionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId  String
+  fromUserId String
+  fromRole   String
+  body       String
+  createdAt  DateTime               @default(now())
+
+  @@index([requestId, createdAt])
+}
+
+model LandAuditEvent {
+  id         String   @id @default(cuid())
+  actorUserId String?
+  action     String
+  entityType String
+  entityId   String
+  summary    String
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
 }
 
 model CspViolation {

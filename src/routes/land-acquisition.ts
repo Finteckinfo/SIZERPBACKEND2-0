@@ -2,6 +2,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { authenticateToken } from '../middleware/auth.js';
 import { prisma } from '../utils/prisma.js';
 import { LandRequestStep, LandRequestStatus, LandListingStatus, ListingKind } from '@prisma/client';
+import {
+  FILE_META_SELECT,
+  optionalTrim,
+  parseUploadedFiles,
+  recordAudit,
+  seedDiligence,
+} from '../lib/land-ops.js';
 
 const router = Router();
 
@@ -19,6 +26,9 @@ const listingPublicFields = {
   badges: true,
   media: true,
   satelliteSceneDate: true,
+  satelliteStatus: true,
+  satelliteNotes: true,
+  satelliteVerifiedAt: true,
   status: true,
   updatedAt: true,
 } as const;
@@ -47,8 +57,11 @@ function parseOptionalPrice(raw: unknown): number | null {
 }
 
 const dealInclude = {
-  listing: true,
+  listing: { include: { files: { select: FILE_META_SELECT } } },
   documents: true,
+  files: { select: FILE_META_SELECT, orderBy: { createdAt: 'desc' as const } },
+  diligenceItems: { orderBy: { createdAt: 'asc' as const } },
+  messages: { orderBy: { createdAt: 'asc' as const } },
   selectedPlot: { include: { images: true, satelliteVerification: true } },
   plots: { include: { images: true, satelliteVerification: true } },
 } as const;
@@ -278,6 +291,10 @@ router.post('/create-request', async (req: Request, res: Response) => {
       contactEmail,
       name,
       email,
+      legalFullName,
+      legalIdType,
+      legalIdNumber,
+      nationality,
     } = req.body;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     if (!purpose) {
@@ -316,6 +333,13 @@ router.post('/create-request', async (req: Request, res: Response) => {
       contactEmail: resolvedEmail,
     };
 
+    const legalData = {
+      legalFullName: optionalTrim(legalFullName),
+      legalIdType: optionalTrim(legalIdType),
+      legalIdNumber: optionalTrim(legalIdNumber),
+      nationality: optionalTrim(nationality),
+    };
+
     if (!request) {
       request = await prisma.landAcquisitionRequest.create({
         data: {
@@ -328,6 +352,7 @@ router.post('/create-request', async (req: Request, res: Response) => {
           plotReference: plotReference ? String(plotReference).trim() : null,
           currentStep: LandRequestStep.CREATE_REQUEST,
           status: LandRequestStatus.REQUEST_CREATED,
+          ...Object.fromEntries(Object.entries(legalData).filter(([, v]) => v !== undefined)),
         },
       });
     } else if (request.listingId) {
@@ -338,6 +363,7 @@ router.post('/create-request', async (req: Request, res: Response) => {
           walletAddress: walletAddress?.trim() || request.walletAddress,
           ...contactData,
           purpose: String(purpose).trim(),
+          ...Object.fromEntries(Object.entries(legalData).filter(([, v]) => v !== undefined)),
         },
       });
     } else {
@@ -352,6 +378,7 @@ router.post('/create-request', async (req: Request, res: Response) => {
           plotReference: plotReference ? String(plotReference).trim() : null,
           currentStep: LandRequestStep.CREATE_REQUEST,
           status: LandRequestStatus.REQUEST_CREATED,
+          ...Object.fromEntries(Object.entries(legalData).filter(([, v]) => v !== undefined)),
         },
       });
     }
@@ -528,7 +555,12 @@ router.post('/select-listing', async (req: Request, res: Response) => {
       include: dealInclude,
     });
     if (existing) {
-      return res.json({ success: true, deal: existing, alreadySelected: true });
+      await seedDiligence(existing.id);
+      const refreshed = await prisma.landAcquisitionRequest.findUnique({
+        where: { id: existing.id },
+        include: dealInclude,
+      });
+      return res.json({ success: true, deal: refreshed || existing, alreadySelected: true });
     }
 
     const deal = await prisma.$transaction(async (tx) => {
@@ -567,6 +599,10 @@ router.post('/select-listing', async (req: Request, res: Response) => {
         contactEmail: unbound?.contactEmail || profile?.contactEmail || null,
         purpose: unbound?.purpose || profile?.purpose || null,
         walletAddress: unbound?.walletAddress || profile?.walletAddress || null,
+        legalFullName: unbound?.legalFullName || profile?.legalFullName || null,
+        legalIdType: unbound?.legalIdType || profile?.legalIdType || null,
+        legalIdNumber: unbound?.legalIdNumber || profile?.legalIdNumber || null,
+        nationality: unbound?.nationality || profile?.nationality || null,
       };
 
       if (unbound) {
@@ -582,6 +618,15 @@ router.post('/select-listing', async (req: Request, res: Response) => {
       });
     });
 
+    await seedDiligence(deal.id);
+    await recordAudit({
+      actorUserId: userId,
+      action: 'SELECT_LISTING',
+      entityType: 'LandAcquisitionRequest',
+      entityId: deal.id,
+      summary: `Deal started for ${deal.listing?.title || listingId}`,
+      meta: { listingId },
+    });
     await notify(
       userId,
       'Deal started',
@@ -594,7 +639,11 @@ router.post('/select-listing', async (req: Request, res: Response) => {
       '/admin/deals'
     );
 
-    return res.json({ success: true, deal, alreadySelected: false });
+    const withChecklist = await prisma.landAcquisitionRequest.findUnique({
+      where: { id: deal.id },
+      include: dealInclude,
+    });
+    return res.json({ success: true, deal: withChecklist || deal, alreadySelected: false });
   } catch (err: any) {
     if (err?.status) return res.status(err.status).json({ error: err.message });
     console.error('[LandAcquisition] POST select-listing error:', err);
@@ -651,6 +700,7 @@ router.get('/submissions', async (req: Request, res: Response) => {
     const listings = await prisma.landListing.findMany({
       where: { submittedByUserId: userId },
       orderBy: { createdAt: 'desc' },
+      include: { files: { select: FILE_META_SELECT } },
     });
     return res.json(listings);
   } catch (err) {
@@ -666,9 +716,22 @@ router.post('/submissions', async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const { title, kind, location, description, askingPrice, fileName, media, region } = req.body || {};
+    const { title, kind, location, description, askingPrice, fileName, media, region, latitude, longitude } = req.body || {};
     if (!title || !String(title).trim()) return res.status(400).json({ error: 'title is required' });
     if (!location || !String(location).trim()) return res.status(400).json({ error: 'location is required' });
+
+    let uploads: ReturnType<typeof parseUploadedFiles> = [];
+    try {
+      uploads = parseUploadedFiles(req.body);
+    } catch (e: any) {
+      return res.status(e.status || 400).json({ error: e.message || 'Invalid files' });
+    }
+    let latLng: { lat: number | null; lng: number | null } = { lat: null, lng: null };
+    try {
+      latLng = parseOptionalLatLng(latitude, longitude);
+    } catch (e: any) {
+      return res.status(400).json({ error: e.message || 'Invalid coordinates' });
+    }
 
     const listing = await prisma.landListing.create({
       data: {
@@ -678,17 +741,43 @@ router.post('/submissions', async (req: Request, res: Response) => {
         kind: parseKind(kind),
         region: region != null && String(region).trim() ? String(region).trim() : null,
         listPrice: parseOptionalPrice(askingPrice),
+        latitude: latLng.lat,
+        longitude: latLng.lng,
         media:
           media != null
             ? media
-            : fileName
-              ? { files: [{ name: String(fileName) }] }
-              : undefined,
+            : {
+                files: [
+                  ...uploads.map((f) => ({ name: f.filename, mimeType: f.mimeType, byteSize: f.byteSize, kind: f.kind })),
+                  ...(fileName && !uploads.length ? [{ name: String(fileName) }] : []),
+                ],
+              },
         status: LandListingStatus.PENDING_VETTING,
         submittedByUserId: userId,
+        files: uploads.length
+          ? {
+              create: uploads.map((f) => ({
+                uploadedByUserId: userId,
+                filename: f.filename,
+                mimeType: f.mimeType,
+                byteSize: f.byteSize,
+                data: f.data,
+                kind: f.kind,
+              })),
+            }
+          : undefined,
       },
+      include: { files: { select: FILE_META_SELECT } },
     });
 
+    await recordAudit({
+      actorUserId: userId,
+      action: 'SUBMIT_ASSET',
+      entityType: 'LandListing',
+      entityId: listing.id,
+      summary: `Submitted ${listing.title} for vetting`,
+      meta: { fileCount: listing.files.length },
+    });
     await notify(
       userId,
       'Asset submitted',
@@ -804,8 +893,11 @@ router.get('/admin/requests', async (_req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true } },
-        listing: true,
+        listing: { include: { files: { select: FILE_META_SELECT } } },
         documents: true,
+        files: { select: FILE_META_SELECT },
+        diligenceItems: true,
+        messages: { orderBy: { createdAt: 'asc' } },
         plots: { include: { images: true, satelliteVerification: true } },
         selectedPlot: { include: { images: true, satelliteVerification: true } },
       },
@@ -927,6 +1019,13 @@ router.patch('/admin/request/:id/status', async (req: Request, res: Response) =>
       `Your deal is now ${status.replace(/_/g, ' ').toLowerCase()}.`,
       prev.listingId ? `/dashboard/deals/${prev.id}` : '/dashboard/deals'
     );
+    await recordAudit({
+      actorUserId: req.user?.id,
+      action: 'DEAL_STATUS',
+      entityType: 'LandAcquisitionRequest',
+      entityId: prev.id,
+      summary: `Status ${prev.status} → ${status}`,
+    });
 
     return res.json({ success: true, request });
   } catch (err) {
@@ -969,6 +1068,13 @@ router.post('/admin/documents', async (req: Request, res: Response) => {
       `${String(type)} was added to your deal.`,
       deal.listingId ? `/dashboard/deals/${deal.id}` : '/dashboard/deals'
     );
+    await recordAudit({
+      actorUserId: uploadedBy,
+      action: 'ADD_DOCUMENT_URL',
+      entityType: 'LandAcquisitionRequest',
+      entityId: deal.id,
+      summary: `Added ${String(type)} URL`,
+    });
 
     return res.json({ success: true, document: doc });
   } catch (err) {
@@ -1004,6 +1110,7 @@ router.get('/admin/catalog/listings', async (_req: Request, res: Response) => {
       orderBy: { updatedAt: 'desc' },
       include: {
         submittedBy: { select: { id: true, email: true, firstName: true, lastName: true } },
+        files: { select: FILE_META_SELECT },
         _count: { select: { deals: true } },
       },
     });
@@ -1060,6 +1167,14 @@ router.post('/admin/catalog/listings', async (req: Request, res: Response) => {
         status: parsedStatus || LandListingStatus.DRAFT,
       },
     });
+    await recordAudit({
+      actorUserId: req.user?.id,
+      action: 'CATALOG_CREATE',
+      entityType: 'LandListing',
+      entityId: listing.id,
+      summary: `Created catalog listing ${listing.title}`,
+      meta: { status: listing.status },
+    });
     return res.json({ success: true, listing });
   } catch (err) {
     console.error('[LandAcquisition] Admin POST catalog error:', err);
@@ -1087,6 +1202,9 @@ router.patch('/admin/catalog/listings/:id', async (req: Request, res: Response) 
       kind,
       region,
       badges,
+      satelliteStatus,
+      satelliteNotes,
+      satelliteSceneDate,
     } = req.body;
 
     const data: Record<string, unknown> = {};
@@ -1118,10 +1236,26 @@ router.patch('/admin/catalog/listings/:id', async (req: Request, res: Response) 
       if (!parsedStatus) return res.status(400).json({ error: 'Invalid listing status' });
       data.status = parsedStatus;
     }
+    if (satelliteStatus !== undefined) data.satelliteStatus = optionalTrim(satelliteStatus);
+    if (satelliteNotes !== undefined) data.satelliteNotes = optionalTrim(satelliteNotes);
+    if (satelliteSceneDate !== undefined) {
+      data.satelliteSceneDate = satelliteSceneDate ? new Date(String(satelliteSceneDate)) : null;
+    }
+    if (satelliteStatus && String(satelliteStatus).toUpperCase() !== 'UNVERIFIED') {
+      data.satelliteVerifiedAt = new Date();
+    }
 
     const listing = await prisma.landListing.update({
       where: { id },
       data: data as any,
+    });
+    await recordAudit({
+      actorUserId: req.user?.id,
+      action: 'CATALOG_PATCH',
+      entityType: 'LandListing',
+      entityId: listing.id,
+      summary: `Updated ${listing.title}`,
+      meta: { fields: Object.keys(data) },
     });
     return res.json({ success: true, listing });
   } catch (err) {
@@ -1155,6 +1289,7 @@ router.get('/admin/submissions', async (_req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
       include: {
         submittedBy: { select: { id: true, email: true, firstName: true, lastName: true } },
+        files: { select: FILE_META_SELECT },
         _count: { select: { deals: true } },
       },
     });
@@ -1206,10 +1341,366 @@ router.post('/admin/submissions/:id/review', async (req: Request, res: Response)
       );
     }
 
+    await recordAudit({
+      actorUserId: req.user?.id,
+      action: action === 'approve' ? 'VETTING_APPROVE' : 'VETTING_REJECT',
+      entityType: 'LandListing',
+      entityId: listing.id,
+      summary:
+        action === 'approve'
+          ? `Published ${listing.title}`
+          : `Rejected ${listing.title}: ${reason}`,
+    });
+
     return res.json({ success: true, listing: updated });
   } catch (err) {
     console.error('[LandAcquisition] Admin POST review error:', err);
     return res.status(500).json({ error: 'Failed to review submission' });
+  }
+});
+
+async function viewerIsLandAdmin(req: Request): Promise<boolean> {
+  const userId = req.user?.id;
+  const email = req.user?.email;
+  const adminEmails = (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (email && adminEmails.includes(email.toLowerCase())) return true;
+  const or: Array<{ id?: string; email?: { equals: string; mode: 'insensitive' } }> = [];
+  if (userId) or.push({ id: userId });
+  if (email) or.push({ email: { equals: email, mode: 'insensitive' } });
+  if (!or.length) return false;
+  const dbUser = await prisma.user.findFirst({ where: { OR: or }, select: { isLandAdmin: true, email: true } });
+  return Boolean(dbUser?.isLandAdmin || (dbUser?.email && adminEmails.includes(dbUser.email.toLowerCase())));
+}
+
+async function assertFileAccess(req: Request, file: { listingId: string | null; requestId: string | null; uploadedByUserId: string }) {
+  const userId = req.user?.id;
+  if (!userId) return false;
+  if (file.uploadedByUserId === userId) return true;
+  if (await viewerIsLandAdmin(req)) return true;
+  if (file.requestId) {
+    const deal = await prisma.landAcquisitionRequest.findUnique({
+      where: { id: file.requestId },
+      select: { userId: true },
+    });
+    if (deal?.userId === userId) return true;
+  }
+  if (file.listingId) {
+    const listing = await prisma.landListing.findUnique({
+      where: { id: file.listingId },
+      select: { submittedByUserId: true },
+    });
+    if (listing?.submittedByUserId === userId) return true;
+    const buyerDeal = await prisma.landAcquisitionRequest.findFirst({
+      where: { listingId: file.listingId, userId },
+      select: { id: true },
+    });
+    if (buyerDeal) return true;
+  }
+  return false;
+}
+
+/**
+ * POST /api/land-acquisition/files
+ * Store a real file (base64 JSON) on a listing or deal.
+ */
+router.post('/files', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const listingId = optionalTrim(req.body?.listingId) || null;
+    const requestId = optionalTrim(req.body?.requestId) || null;
+    let uploads;
+    try {
+      uploads = parseUploadedFiles(req.body);
+    } catch (e: any) {
+      return res.status(e.status || 400).json({ error: e.message || 'Invalid files' });
+    }
+    if (!uploads.length) return res.status(400).json({ error: 'files are required' });
+
+    const admin = await viewerIsLandAdmin(req);
+    if (listingId) {
+      const listing = await prisma.landListing.findUnique({ where: { id: listingId }, select: { submittedByUserId: true } });
+      if (!listing) return res.status(404).json({ error: 'Listing not found' });
+      if (!admin && listing.submittedByUserId !== userId) return res.status(403).json({ error: 'Not allowed' });
+    }
+    if (requestId) {
+      const deal = await prisma.landAcquisitionRequest.findUnique({ where: { id: requestId }, select: { userId: true } });
+      if (!deal) return res.status(404).json({ error: 'Deal not found' });
+      if (!admin && deal.userId !== userId) return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    const created = await prisma.$transaction(
+      uploads.map((f) =>
+        prisma.landFile.create({
+          data: {
+            uploadedByUserId: userId,
+            filename: f.filename,
+            mimeType: f.mimeType,
+            byteSize: f.byteSize,
+            data: f.data,
+            kind: f.kind,
+            listingId,
+            requestId,
+          },
+          select: FILE_META_SELECT,
+        })
+      )
+    );
+
+    await recordAudit({
+      actorUserId: userId,
+      action: 'UPLOAD_FILE',
+      entityType: listingId ? 'LandListing' : requestId ? 'LandAcquisitionRequest' : 'LandFile',
+      entityId: listingId || requestId || created[0].id,
+      summary: `Uploaded ${created.length} file(s)`,
+    });
+    if (requestId) {
+      const deal = await prisma.landAcquisitionRequest.findUnique({ where: { id: requestId }, select: { userId: true, listingId: true } });
+      if (deal && userId !== deal.userId) {
+        await notify(
+          deal.userId,
+          'New file on your deal',
+          created.map((f) => f.filename).join(', '),
+          deal.listingId ? `/dashboard/deals/${requestId}` : '/dashboard/deals'
+        );
+      }
+    }
+    return res.json({ success: true, files: created });
+  } catch (err) {
+    console.error('[LandAcquisition] POST files error:', err);
+    return res.status(500).json({ error: 'Failed to store files' });
+  }
+});
+
+router.get('/files', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const listingId = typeof req.query.listingId === 'string' ? req.query.listingId : '';
+    const requestId = typeof req.query.requestId === 'string' ? req.query.requestId : '';
+    if (!listingId && !requestId) return res.status(400).json({ error: 'listingId or requestId is required' });
+    const admin = await viewerIsLandAdmin(req);
+    if (listingId) {
+      const listing = await prisma.landListing.findUnique({ where: { id: listingId }, select: { submittedByUserId: true } });
+      if (!listing) return res.status(404).json({ error: 'Listing not found' });
+      const buyerDeal = await prisma.landAcquisitionRequest.findFirst({
+        where: { listingId, userId },
+        select: { id: true },
+      });
+      if (!admin && listing.submittedByUserId !== userId && !buyerDeal) return res.status(403).json({ error: 'Not allowed' });
+    }
+    if (requestId) {
+      const deal = await prisma.landAcquisitionRequest.findUnique({ where: { id: requestId }, select: { userId: true } });
+      if (!deal) return res.status(404).json({ error: 'Deal not found' });
+      if (!admin && deal.userId !== userId) return res.status(403).json({ error: 'Not allowed' });
+    }
+    const files = await prisma.landFile.findMany({
+      where: {
+        ...(listingId ? { listingId } : {}),
+        ...(requestId ? { requestId } : {}),
+      },
+      select: FILE_META_SELECT,
+      orderBy: { createdAt: 'desc' },
+    });
+    return res.json(files);
+  } catch (err) {
+    console.error('[LandAcquisition] GET files error:', err);
+    return res.status(500).json({ error: 'Failed to list files' });
+  }
+});
+
+router.get('/files/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const file = await prisma.landFile.findUnique({ where: { id: req.params.id } });
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    const { data, ...meta } = file;
+    if (!(await assertFileAccess(req, file))) return res.status(403).json({ error: 'Not allowed' });
+    return res.json({
+      ...meta,
+      dataBase64: Buffer.from(data).toString('base64'),
+    });
+  } catch (err) {
+    console.error('[LandAcquisition] GET file error:', err);
+    return res.status(500).json({ error: 'Failed to load file' });
+  }
+});
+
+router.post('/deals/:id/messages', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const body = String(req.body?.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'body is required' });
+    const deal = await prisma.landAcquisitionRequest.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, userId: true, listingId: true, contactName: true },
+    });
+    if (!deal || !deal.listingId) return res.status(404).json({ error: 'Deal not found' });
+    const admin = await viewerIsLandAdmin(req);
+    if (!admin && deal.userId !== userId) return res.status(403).json({ error: 'Not allowed' });
+    const message = await prisma.landMessage.create({
+      data: {
+        requestId: deal.id,
+        fromUserId: userId,
+        fromRole: admin && deal.userId !== userId ? 'OPERATOR' : 'BUYER',
+        body: body.slice(0, 4000),
+      },
+    });
+    if (admin && deal.userId !== userId) {
+      await notify(deal.userId, 'New message on your deal', body.slice(0, 180), `/dashboard/deals/${deal.id}`);
+    } else {
+      await notifyLandAdmins(
+        'Buyer message',
+        `${deal.contactName || 'A buyer'} wrote on a deal.`,
+        '/admin/messages'
+      );
+    }
+    return res.json({ success: true, message });
+  } catch (err) {
+    console.error('[LandAcquisition] POST message error:', err);
+    return res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+router.patch('/admin/diligence/:id', async (req: Request, res: Response) => {
+  try {
+    const item = await prisma.landDiligenceItem.findUnique({
+      where: { id: req.params.id },
+      include: { request: { select: { id: true, userId: true, listingId: true } } },
+    });
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+    const done = req.body?.done;
+    const notes = optionalTrim(req.body?.notes);
+    const updated = await prisma.landDiligenceItem.update({
+      where: { id: item.id },
+      data: {
+        ...(typeof done === 'boolean' ? { done } : {}),
+        ...(notes !== undefined ? { notes } : {}),
+        updatedByUserId: req.user?.id || null,
+      },
+    });
+    await recordAudit({
+      actorUserId: req.user?.id,
+      action: 'DILIGENCE_UPDATE',
+      entityType: 'LandAcquisitionRequest',
+      entityId: item.requestId,
+      summary: `${item.label} → ${updated.done ? 'done' : 'open'}`,
+    });
+    if (typeof done === 'boolean') {
+      await notify(
+        item.request.userId,
+        'Diligence updated',
+        `${item.label} is ${done ? 'complete' : 'reopened'}.`,
+        item.request.listingId ? `/dashboard/deals/${item.request.id}` : '/dashboard/deals'
+      );
+    }
+    return res.json({ success: true, item: updated });
+  } catch (err) {
+    console.error('[LandAcquisition] PATCH diligence error:', err);
+    return res.status(500).json({ error: 'Failed to update diligence' });
+  }
+});
+
+router.patch('/admin/request/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const existing = await prisma.landAcquisitionRequest.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'Request not found' });
+    const data: Record<string, unknown> = {};
+    const registryRef = optionalTrim(req.body?.registryRef);
+    const courierTracking = optionalTrim(req.body?.courierTracking);
+    if (registryRef !== undefined) data.registryRef = registryRef;
+    if (courierTracking !== undefined) data.courierTracking = courierTracking;
+    if (!Object.keys(data).length) return res.status(400).json({ error: 'No fields to update' });
+    const request = await prisma.landAcquisitionRequest.update({ where: { id }, data });
+    await recordAudit({
+      actorUserId: req.user?.id,
+      action: 'DEAL_DELIVERY',
+      entityType: 'LandAcquisitionRequest',
+      entityId: id,
+      summary: 'Updated registry / courier fields',
+    });
+    await notify(
+      existing.userId,
+      'Delivery details updated',
+      [request.registryRef && `Registry ${request.registryRef}`, request.courierTracking && `Courier ${request.courierTracking}`]
+        .filter(Boolean)
+        .join(' · ') || 'Your deal delivery fields were updated.',
+      existing.listingId ? `/dashboard/deals/${existing.id}` : '/dashboard/deals'
+    );
+    return res.json({ success: true, request });
+  } catch (err) {
+    console.error('[LandAcquisition] PATCH request extra error:', err);
+    return res.status(500).json({ error: 'Failed to update request' });
+  }
+});
+
+router.get('/admin/audit', async (_req: Request, res: Response) => {
+  try {
+    const events = await prisma.landAuditEvent.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+    return res.json(events);
+  } catch (err) {
+    console.error('[LandAcquisition] GET audit error:', err);
+    return res.status(500).json({ error: 'Failed to load audit log' });
+  }
+});
+
+router.get('/admin/inbox', async (_req: Request, res: Response) => {
+  try {
+    const messages = await prisma.landMessage.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 80,
+      include: {
+        request: {
+          select: {
+            id: true,
+            contactName: true,
+            contactEmail: true,
+            listing: { select: { title: true } },
+          },
+        },
+      },
+    });
+    return res.json(messages);
+  } catch (err) {
+    console.error('[LandAcquisition] GET inbox error:', err);
+    return res.status(500).json({ error: 'Failed to load inbox' });
+  }
+});
+
+router.post('/admin/catalog/listings/:id/satellite', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const listing = await prisma.landListing.findUnique({ where: { id } });
+    if (!listing) return res.status(404).json({ error: 'Listing not found' });
+    const satelliteStatus = optionalTrim(req.body?.satelliteStatus) || 'UNVERIFIED';
+    const satelliteNotes = optionalTrim(req.body?.notes ?? req.body?.satelliteNotes);
+    const scene = req.body?.satelliteSceneDate;
+    const updated = await prisma.landListing.update({
+      where: { id },
+      data: {
+        satelliteStatus,
+        satelliteNotes,
+        satelliteSceneDate: scene ? new Date(String(scene)) : listing.satelliteSceneDate,
+        satelliteVerifiedAt: satelliteStatus !== 'UNVERIFIED' ? new Date() : null,
+      },
+    });
+    await recordAudit({
+      actorUserId: req.user?.id,
+      action: 'SATELLITE_RECORD',
+      entityType: 'LandListing',
+      entityId: id,
+      summary: `${listing.title}: ${satelliteStatus}`,
+    });
+    return res.json({ success: true, listing: updated });
+  } catch (err) {
+    console.error('[LandAcquisition] POST satellite error:', err);
+    return res.status(500).json({ error: 'Failed to record satellite check' });
   }
 });
 
